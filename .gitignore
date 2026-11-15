@@ -1,8 +1,5 @@
 # Data (local SQLite DB — runtime state, not source)
-data/*.db
-data/*.db-journal
-data/*.db-wal
-data/*.db-shm
+/data/
 
 # Python
 __pycache__/

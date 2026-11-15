@@ -40,4 +40,4 @@ Tests use temporary databases; set `BANK_OF_DAD_DB` to a disposable path when ru
 
 ## Licensing
 
-No license was included in the source provided for this release candidate. No license is granted by this README; obtain the rights holder's permission and resolve licensing before distributing or publishing.
+Bank of Dad is available under the [MIT License](LICENSE).

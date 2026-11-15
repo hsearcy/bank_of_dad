@@ -6,7 +6,7 @@ let STATE = { kids: [], config: null };
 let SERVER_NOW = 0;     // server clock at last fetch (epoch s, honours fast-forward)
 let FETCH_AT = 0;       // local clock at last fetch
 
-// Notes/reasons are free text typed by Dad, and we paint them with innerHTML.
+// Escape user-controlled text before interpolating it into HTML or attributes.
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -416,8 +416,8 @@ function kidCard(k) {
 
   el.innerHTML = `
     <div class="who">
-      <div class="avatar">${k.emoji}</div>
-      <div class="name">${k.name}</div>
+      <div class="avatar">${esc(k.emoji)}</div>
+      <div class="name">${esc(k.name)}</div>
       <div class="total">
         <div class="label">💰 All my money</div>
         <div class="big">${dollars(k.owned_cents)}</div>
@@ -668,7 +668,7 @@ function openGraphModal(k) {
     const current = STATE.kids.find((kid) => kid.id === k.id) || k;
     card.innerHTML = `
       <div class="graph-modal-head">
-        <h2>${current.emoji} ${current.name}'s Money Over Time</h2>
+        <h2>${esc(current.emoji)} ${esc(current.name)}'s Money Over Time</h2>
         <button class="graph-close" aria-label="Close graph">✕</button>
       </div>
       <div class="expanded-chart">${moneyChart(k, true)}</div>
@@ -772,7 +772,7 @@ function openSaveModal(k) {
   const card = $("#modalCard");
   const cfg = STATE.config;
   card.innerHTML = `
-    <h2>🏦 ${k.name}'s Savings</h2>
+    <h2>🏦 ${esc(k.name)}'s Savings</h2>
     <p>Savings grow <b>${cfg.savings_weekly_pct}% every week</b>! 📈<br>
        You have <b>${dollars(k.wallet_cents)}</b> coins to save.</p>
     <div class="amount-grid">${amountGrid(k.wallet_cents, cfg.min_move_cents)}</div>
@@ -907,7 +907,7 @@ function agoLabel(ts) {
 
 async function openHistoryModal(k) {
   const card = $("#modalCard");
-  card.innerHTML = `<h2>📜 ${k.name}'s History</h2><div class="tx-list">Loading…</div>
+  card.innerHTML = `<h2>📜 ${esc(k.name)}'s History</h2><div class="tx-list">Loading…</div>
     <button class="close">Close</button>`;
   $(".close", card).onclick = modalClose;
   $("#modal").classList.remove("hidden");
@@ -934,7 +934,7 @@ const AMOUNT_EDITABLE = new Set(["gift", "allowance", "interest", "spend"]);
 async function openEditHistory(k) {
   const card = $("#modalCard");
   const render = (txs) => {
-    card.innerHTML = `<h2>📜 Edit ${k.name}'s transactions</h2>
+    card.innerHTML = `<h2>📜 Edit ${esc(k.name)}'s transactions</h2>
       <p style="font-size:13px;opacity:.65">Editing an amount or deleting a row also fixes the balance.</p>
       <div class="etx-list">${txs.length ? "" : '<p class="pool-empty">No transactions yet.</p>'}</div>
       <button class="close">Close</button>`;
@@ -974,7 +974,7 @@ async function openEditHistory(k) {
     const r = await api(`/api/transactions?kid_id=${k.id}`);
     render(r.transactions || []);
   };
-  card.innerHTML = `<h2>📜 Edit ${k.name}'s transactions</h2><p>Loading…</p>`;
+  card.innerHTML = `<h2>📜 Edit ${esc(k.name)}'s transactions</h2><p>Loading…</p>`;
   $("#modal").classList.remove("hidden");
   await load();
 }
@@ -1138,7 +1138,7 @@ function renderDadPanel() {
   const box = $("#dadKids");
   box.innerHTML = STATE.kids.map((k) => `
     <div class="dk" data-id="${k.id}">
-      <div class="dk-head">${k.emoji} ${k.name} — ${dollars(k.owned_cents)}</div>
+      <div class="dk-head">${esc(k.emoji)} ${esc(k.name)} — ${dollars(k.owned_cents)}</div>
       <div class="row gift-row">
         <input type="number" placeholder="$ amount" class="gift-amt" step="0.5" min="0">
         <input type="text" placeholder="What for? (e.g. chores 🧹)" class="gift-note" maxlength="40">

@@ -369,13 +369,16 @@ def delete_transaction(conn, tx_id):
     elif kind == "invest":
         w += amt                      # refund the locked coins
 
+    if w < 0 or s < 0:
+        return False, "Cannot delete: not enough money in the wallet or savings to reverse this transaction."
+
     if kind == "invest" and bid:
         conn.execute("DELETE FROM bonds WHERE id=?", (bid,))
     if kind == "bond_payout" and bid:
         conn.execute("UPDATE bonds SET collected=0 WHERE id=?", (bid,))  # re-lock it
 
     conn.execute("UPDATE kids SET wallet_cents=?, savings_cents=? WHERE id=?",
-                 (max(0, w), max(0, s), kid["id"]))
+                 (w, s, kid["id"]))
     conn.execute("DELETE FROM transactions WHERE id=?", (tx_id,))
     _record_history(conn, kid["id"], now)
     conn.commit()
@@ -405,8 +408,10 @@ def edit_transaction(conn, tx_id, new_amount_cents, new_note):
         s += delta
     else:                              # gift / allowance / spend -> wallet
         w += delta
+    if w < 0 or s < 0:
+        return False, "Cannot edit: not enough money in the wallet or savings for this change."
     conn.execute("UPDATE kids SET wallet_cents=?, savings_cents=? WHERE id=?",
-                 (max(0, w), max(0, s), kid["id"]))
+                 (w, s, kid["id"]))
     conn.execute("UPDATE transactions SET amount_cents=?, note=? WHERE id=?",
                  (new_signed, note, tx_id))
     _record_history(conn, kid["id"], now)
