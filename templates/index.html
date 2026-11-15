@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Bank of Dad">
+  <meta name="theme-color" content="#ffb302">
+  <title>🏦 Bank of Dad</title>
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link rel="icon" href="/static/icon-192.png">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>🏦 Bank of Dad</h1>
+    <button id="dadBtn" class="dad-btn" title="Dad controls">👨‍👧 Dad</button>
+  </header>
+
+  <main id="kids" class="kids"></main>
+
+  <!-- Dad panel -->
+  <div id="dadPanel" class="panel hidden">
+    <div class="panel-card">
+      <h2>👨‍👧 Dad Controls</h2>
+      <div id="dadKids" class="dad-kids"></div>
+      <hr>
+      <h3>Add a kid</h3>
+      <div class="row">
+        <input id="newKidName" placeholder="Name">
+        <input id="newKidEmoji" placeholder="🐣" value="🐣" maxlength="4" class="emoji-in">
+        <button id="addKidBtn" class="go">Add</button>
+      </div>
+      <hr>
+      <h3>Rates</h3>
+      <div id="dadRates"></div>
+      <hr>
+      <h3>Demo</h3>
+      <div class="row">
+        <button class="ff" data-days="7">⏩ +1 week</button>
+        <button class="ff" data-days="30">⏩ +1 month</button>
+        <button class="ff" data-days="90">⏩ +3 months</button>
+      </div>
+      <hr>
+      <h3>Security</h3>
+      <div class="row">
+        <button id="changePinBtn" class="go" style="background:#8b5cf6">🔒 Set / Change Dad PIN</button>
+      </div>
+      <button id="closeDad" class="close">Close</button>
+    </div>
+  </div>
+
+  <!-- Action modal (save / bond) -->
+  <div id="modal" class="panel hidden">
+    <div class="panel-card" id="modalCard"></div>
+  </div>
+
+  <div id="confetti" class="confetti-layer"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

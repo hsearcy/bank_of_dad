@@ -1,0 +1,25 @@
+# Data (local SQLite DB — runtime state, not source)
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editor / OS
+.DS_Store
+*.swp
+
+# Local configuration and SQLite files
+.env
+.env.*
+!.env.example
+deploy/*.env
+*.sqlite
+*.sqlite3
+*.db
+*.db-*
