@@ -2,6 +2,18 @@
 
 A local, kid-friendly savings dashboard for tracking imaginary family balances, allowances, savings interest, and fixed-term investments. It does not connect to a bank or move real money.
 
+## Screenshots
+
+These screenshots show fictional names and sample balances in a disposable database. A fresh install starts empty.
+
+**Dashboard** — see balances, projected growth, savings, and investments at a glance.
+
+![Bank of Dad dashboard with two fictional children's savings and investments](docs/screenshots/dashboard.png)
+
+**Money over time** — explore an expanded view of past and projected balances.
+
+![Expanded money-over-time graph for a fictional child](docs/screenshots/money-over-time.png)
+
 ## Start
 
 Requires Python 3 and `venv`. From this directory:
