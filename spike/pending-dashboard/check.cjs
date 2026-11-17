@@ -59,8 +59,10 @@ async function frames(w,n) {for(let i=0;i<50 && w.frames.length<n;i++) await sle
  const db=await driver(F,'full_snapshot');
  assert.deepEqual(await driver(F,'mutate',[F,a,'blocked','gift',[1,1]],400),{error:'pending'});
  assert.deepEqual(await driver(F,'acknowledge',[F,a,'false',[true,'Nothing to take out']],400),{error:'result_mismatch'});
- const unrelated=await driver(F,'fault',['bogus',[], ''],400); assert.deepEqual(unrelated,{error:'other'});
- assert.throws(()=>assert.deepEqual(unrelated,{error:'pending'})); assert.deepEqual(await driver(F,'full_snapshot'),db);
+ const unrelated=await driver(F,'pending_sql_fault',[[F,a,'blocked','gift',[1,1]]],400);
+ if (unrelated.error !== 'other') throw Error(`pending SQL negative control misclassified: ${JSON.stringify(unrelated)}`);
+ assert.deepEqual(unrelated,{error:'other',stage:'pending_check_sql_failed'});
+ assert.deepEqual(await driver(F,'full_snapshot'),db); await frames(sa,3);
  assert.deepEqual(await driver(F,'mutate',[F,a2,'false','withdraw',[1,1]]),[false,'Nothing to take out']); await frames(sa,3);
  assert.equal(await driver(F,'acknowledge',[F,a2,'false',[false,'Nothing to take out']]),true); await Promise.all([frames(sa,4),frames(sa2,4),frames(sp,4)]); assert.equal(await get(F,a,'/api/pending'),null);
  const pre=await driver(F,'full_snapshot');

@@ -14,6 +14,12 @@ def main():
         shutil.copyfile(ROOT/'tests_hosted/synthetic_recovery_socket.py', src/'synthetic_recovery_socket.py')
         for name in ('worker.py', 'caller.js'):
             shutil.copyfile(ROOT/'spike/pending-dashboard'/name, src/name)
+        if '--mutant' in sys.argv:
+            worker = src/'worker.py'
+            text = worker.read_text()
+            original = "categories.get((type(e), str(e)), 'other')"
+            assert text.count(original) == 1
+            worker.write_text(text.replace(original, "categories.get((type(e), str(e)), 'pending')"))
         source = (ROOT/'app.py').read_text(); tree = ast.parse(source)
         cfg = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'cfg')
         (src/'dashboard_contract.py').write_text('import bank, config\n' + ast.get_source_segment(source, cfg) + '\n')
@@ -49,4 +55,12 @@ def main():
                     proxy.terminate(); proxy.wait(timeout=10)
                 stop(p)
 
-if __name__ == '__main__': main()
+if __name__ == '__main__':
+    if sys.argv[1:] == ['--verify-mutant']:
+        run = subprocess.run([sys.executable, __file__, '--mutant'], capture_output=True, text=True, timeout=300)
+        output = run.stdout + run.stderr
+        assert run.returncode != 0 and 'pending SQL negative control misclassified:' in output and 'pending_check_sql_failed' in output, output
+        print('PASS classifier mutant rejected by pending SQL negative control')
+    else:
+        assert sys.argv[1:] in ([], ['--mutant'])
+        main()

@@ -12,9 +12,12 @@ Install pinned test dependencies with `npm ci --prefix tests_hosted`, then run:
 
 ```
 WRANGLER_BIN="$PWD/tests_hosted/node_modules/.bin/wrangler" python spike/pending-dashboard/test_integration.py
+WRANGLER_BIN="$PWD/tests_hosted/node_modules/.bin/wrangler" python spike/pending-dashboard/test_integration.py --verify-mutant
 python -m unittest discover -s tests_hosted -p 'test_*.py' -v
 ```
 
 The adapter harness copies only synthetic source into temporary scratch, extracts the existing `cfg` function without importing the live app, constructs local Wrangler configs, and isolates HOME, logs, and SQLite persistence. It exercises the actual local JS Worker to Python DO boundary and real sockets with two fake families, two grants for one principal and a separate principal, cross-family read and driver-write denial, typed SQLite catalog and row snapshots independently around each attempted dashboard write, pending-only and domain events, exact acknowledgment, one-unacknowledged limit, exact synthetic error categories with an unrelated-failure negative control, exact gift wallet and ledger changes, transactional failure/retry, and graceful restart/replay. `server_now` naturally changes and is excluded from state equality comparisons. Quiet socket checks are bounded, restart is graceful, and injected failure is not a provider crash or network failure. The more extensive inherited fixture tests are documented in `tests_hosted/README-recovery-socket.md`.
+
+The negative control repeats the blocked mutation while a pending operation exists, but substitutes a real invalid SQL query at the pending-check query. The synthetic-only wrapper converts the resulting exception into a stage tag, and the usual fixture classifier must report `other`, not `pending`; the full database and socket state are checked. This establishes where the injected query failed, not the original database error's type or text across the RPC boundary. `--verify-mutant` modifies only the temporary worker copy to misclassify unknown errors as pending and requires that specific negative-control assertion to fail. Neither the stage tag nor this driver is part of a production interface.
 
 No production identity/session/origin authorization, trusted clock/rollback protection, backup/restore strategy, migration, durable notifications, hibernation, or deployment security is provided or validated. Reusing the fixture in production would be unsafe.

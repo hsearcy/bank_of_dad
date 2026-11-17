@@ -8,11 +8,11 @@ export default {async fetch(request, env) {
       return new Response('unsafe test driver denied', {status:403});
     try {
       const b = await request.json();
-      const allowed = ['setup','grant','mutate','acknowledge','fault','full_snapshot'];
+      const allowed = ['setup','grant','mutate','acknowledge','fault','pending_sql_fault','full_snapshot'];
       if (!familyOK(b.family) || !allowed.includes(b.method) || !Array.isArray(b.args)) return new Response('invalid test request', {status:400});
       const stub = env.BANK.get(env.BANK.idFromName(b.family));
       const reply = await stub.fixture_call(b.method, b.args);
-      return reply.ok ? Response.json(reply.value) : Response.json({error:reply.error}, {status:400});
+      return reply.ok ? Response.json(reply.value) : Response.json(reply.stage ? {error:reply.error,stage:reply.stage} : {error:reply.error}, {status:400});
     } catch (_) { return new Response('synthetic driver failed', {status:500}); }
   }
   // No dashboard write, including unknown routes, is forwarded to the DO.
