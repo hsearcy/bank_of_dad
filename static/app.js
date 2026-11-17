@@ -30,9 +30,14 @@ function chartDollarLabel(cents) {
 // savings/bonds keep growing smoothly between refreshes.
 const serverNow = () => SERVER_NOW + (Date.now() / 1000 - FETCH_AT);
 
+// Only the loopback synthetic fixture injects this opt-in before app.js.
+const SYNTHETIC = ["127.0.0.1", "localhost", "[::1]"].includes(location.hostname) &&
+  window.__BOD_SYNTHETIC_SPIKE__?.enabled === true ? window.__BOD_SYNTHETIC_SPIKE__ : null;
+let syntheticRefresh = 0;
 let DAD_PIN = null; // remembered after a correct entry, for this page session
 
 async function api(path, body) {
+  if (SYNTHETIC) return SYNTHETIC.request(path, body);
   const headers = { "Content-Type": "application/json" };
   if (DAD_PIN && path.startsWith("/api/admin")) headers["X-Dad-Pin"] = DAD_PIN;
   const res = await fetch(path, {
@@ -44,7 +49,11 @@ async function api(path, body) {
 }
 
 async function refresh() {
-  STATE = await api("/api/state");
+  const context = SYNTHETIC?.context();
+  const serial = SYNTHETIC ? ++syntheticRefresh : 0;
+  const state = await api("/api/state");
+  if (SYNTHETIC && (context !== SYNTHETIC.context() || serial !== syntheticRefresh)) return;
+  STATE = state;
   SERVER_NOW = STATE.server_now || Date.now() / 1000;
   FETCH_AT = Date.now() / 1000;
   render();
@@ -1259,14 +1268,30 @@ function wireGlobal() {
 
 // Register the service worker for installable/offline PWA. Only works in a
 // secure context (HTTPS or localhost) — over plain http it's skipped silently.
-if ("serviceWorker" in navigator && window.isSecureContext) {
+if (!SYNTHETIC && "serviceWorker" in navigator && window.isSecureContext) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});
 }
 
 wireGlobal();
-(async () => {
-  await refresh();
-  await ensurePinSetup();      // force a Dad PIN on first launch
-})();
-setInterval(refresh, 30000); // gentle auto-refresh for the radiator
+if (SYNTHETIC) {
+  SYNTHETIC.attach({ refresh, clear() {
+    syntheticRefresh++;
+    STATE = { kids: [], config: null };
+    SERVER_NOW = FETCH_AT = 0;
+    DAD_PIN = null;
+    WHATIF = {};
+    $("#kids").replaceChildren();
+    modalClose();
+    closeDad();
+    $("#modalCard").replaceChildren();
+    $("#dadKids").replaceChildren();
+    $("#dadRates").replaceChildren();
+  } });
+} else {
+  (async () => {
+    await refresh();
+    await ensurePinSetup();      // force a Dad PIN on first launch
+  })();
+  setInterval(refresh, 30000);
+}
 setInterval(tick, 1000);     // smooth live growth of savings + bonds
