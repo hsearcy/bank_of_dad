@@ -34,12 +34,16 @@ host failure cannot guarantee cleanup.
   through a deliberately small adapter for DO SQL cursor rows, bound
   parameters and transaction ownership (`commit` is intentionally a no-op
   inside `transactionSync`). A fixed synthetic clock enables exact comparison.
-- The test checks the starting wallet and compares all kids, gift ledger and
-  history rows with an in-memory SQLite oracle. A thrown exception after the
-  wallet update and before the ledger insertion must roll everything back.
-- A separate synthetic legacy schema with existing rows tests migrations and
-  idempotence, comparing column metadata and data exactly with SQLite. It is a
-  focused fixture, not a survey of all historic database versions.
+- The test compares full raw kids, transaction (including kid_id and bond_id),
+  history, bonds and settings rows with SQLite and fixed synthetic expected
+  gift values independent of the shared bank implementation. A thrown exception
+  after the wallet update and before the ledger insertion must roll those rows
+  back completely.
+- A separate synthetic legacy schema with existing rows captures actual DO
+  schema and row snapshots before migration and after each of two calls; the
+  second must leave the first unchanged. Fixed expected columns, defaults, and
+  preserved rows supplement SQLite parity. It is a focused fixture, not a
+  survey of all historic database versions.
 - The same persisted DO state is read after a full local Wrangler restart.
   Both worker and oracle forbid application disk-DB entry points; the oracle
   additionally allows only in-memory SQLite, and the configured DB path is a

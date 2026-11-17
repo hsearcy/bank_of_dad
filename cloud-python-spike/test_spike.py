@@ -41,8 +41,10 @@ def oracle():
     bank.add_kid(c, 'Synthetic', '🐣', '#123456')
     assert bank.gift(c, 1, 500, '  chores 🧹  ') is True
     out = {'kids': [dict(r) for r in c.execute('SELECT * FROM kids ORDER BY id')],
-           'ledger': bank.transactions(c, 1),
-           'history': [dict(r) for r in c.execute('SELECT * FROM history ORDER BY id')]}
+           'ledger': [dict(r) for r in c.execute('SELECT * FROM transactions ORDER BY id')],
+           'history': [dict(r) for r in c.execute('SELECT * FROM history ORDER BY id')],
+           'bonds': [dict(r) for r in c.execute('SELECT * FROM bonds ORDER BY id')],
+           'settings': [dict(r) for r in c.execute('SELECT * FROM settings ORDER BY key')]}
     c.close()
     return out
 
@@ -50,13 +52,66 @@ def legacy_oracle():
     c = sqlite3.connect(':memory:')
     c.row_factory = sqlite3.Row
     c.executescript(LEGACY)
-    db._migrate(c)
-    db._migrate(c)
-    out = {table: {'columns': [dict(r) for r in c.execute('PRAGMA table_info(' + table + ')')],
+    def snap():
+        return {'schema': [dict(r) for r in c.execute('SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name')],
+                'tables': {table: {'columns': [dict(r) for r in c.execute('PRAGMA table_info(' + table + ')')],
                    'rows': [dict(r) for r in c.execute('SELECT * FROM ' + table + ' ORDER BY id')]}
-           for table in ('kids', 'history', 'transactions')}
+           for table in ('kids', 'history', 'transactions')}}
+    before = snap()
+    db._migrate(c)
+    first = snap()
+    db._migrate(c)
+    out = {'before': before, 'first': first, 'second': snap()}
     c.close()
     return out
+
+def assert_legacy(migrated):
+    before, first, second = (migrated[k] for k in ('before', 'first', 'second'))
+    assert first == second, (first, second)  # Actual DO, not merely oracle parity.
+    assert before != first
+    expected_columns = {
+        'kids': [('id', 'INTEGER', 0, None, 1), ('name', 'TEXT', 1, None, 0),
+                 ('allowance_enabled', 'INTEGER', 1, '1', 0),
+                 ('allowance_cents', 'INTEGER', 0, None, 0),
+                 ('allowance_period_days', 'INTEGER', 0, None, 0)],
+        'history': [('id', 'INTEGER', 0, None, 1), ('kid_id', 'INTEGER', 0, None, 0),
+                    ('ts', 'REAL', 0, None, 0), ('networth_cents', 'INTEGER', 0, None, 0),
+                    ('wallet_cents', 'INTEGER', 0, None, 0), ('savings_cents', 'INTEGER', 0, None, 0),
+                    ('invest_cents', 'INTEGER', 0, None, 0)],
+        'transactions': [('id', 'INTEGER', 0, None, 1), ('kid_id', 'INTEGER', 0, None, 0),
+                         ('ts', 'REAL', 0, None, 0), ('kind', 'TEXT', 0, None, 0),
+                         ('amount_cents', 'INTEGER', 0, None, 0), ('note', 'TEXT', 0, None, 0),
+                         ('bond_id', 'INTEGER', 0, None, 0)]}
+    expected_rows = {
+        'kids': [{'id': 7, 'name': 'Legacy synthetic', 'allowance_enabled': 1,
+                  'allowance_cents': 300, 'allowance_period_days': 14}],
+        'history': [{'id': 1, 'kid_id': 7, 'ts': 123, 'networth_cents': 321,
+                     'wallet_cents': None, 'savings_cents': None, 'invest_cents': None}],
+        'transactions': [{'id': 1, 'kid_id': 7, 'ts': 123, 'kind': 'gift',
+                          'amount_cents': 321, 'note': 'legacy', 'bond_id': None}]}
+    original_lengths = {'kids': 2, 'history': 4, 'transactions': 6}
+    for table, columns in expected_columns.items():
+        def column_tuples(snapshot):
+            return [(c['name'], c['type'], c['notnull'], c['dflt_value'], c['pk'])
+                    for c in snapshot['tables'][table]['columns']]
+        assert column_tuples(before) == columns[:original_lengths[table]]
+        assert column_tuples(first) == columns
+        assert first['tables'][table]['rows'] == expected_rows[table]
+        assert before['tables'][table]['rows'] == [
+            {k: row[k] for k, *_ in columns[:original_lengths[table]]}
+            for row in expected_rows[table]]
+
+EXPECTED_GIFT = {
+    'kids': [{'id': 1, 'name': 'Synthetic', 'color': '#123456', 'emoji': '🐣',
+              'wallet_cents': 1000, 'savings_cents': 0, 'allowance_enabled': 1,
+              'allowance_cents': 300, 'allowance_period_days': 14,
+              'allowance_anchor_ts': 1700000000, 'allowance_periods_paid': 0,
+              'savings_accrued_ts': 1700000000, 'created_ts': 1700000000}],
+    'ledger': [{'id': 1, 'kid_id': 1, 'ts': 1700000000, 'kind': 'gift',
+                'amount_cents': 500, 'note': 'chores 🧹', 'bond_id': None}],
+    'history': [{'id': 1, 'kid_id': 1, 'ts': 1700000000, 'networth_cents': 1000,
+                 'wallet_cents': 1000, 'savings_cents': 0, 'invest_cents': 0}],
+    'bonds': [], 'settings': []}
 
 def request(port, action, expected=200):
     try:
@@ -136,12 +191,15 @@ def main():
                 expected = oracle()
                 after = request(port, 'read')['result']
                 assert after == expected, (after, expected)
+                assert after == EXPECTED_GIFT, (after, EXPECTED_GIFT)
                 failed = request(port, 'fail', 500)
                 assert 'injected after wallet update' in failed['error'], failed
                 assert request(port, 'read')['result'] == after
                 migrated = request(port, 'legacy')['result']
-                assert migrated == legacy_oracle(), (migrated, legacy_oracle())
-                print('PASS add_kid + gift, exact SQLite oracle, injected rollback, legacy schema/row migration + idempotence', flush=True)
+                assert_legacy(migrated)
+                legacy_expected = legacy_oracle()
+                assert migrated == legacy_expected, (migrated, legacy_expected)
+                print('PASS fixed gift rows + raw SQLite parity, injected rollback, actual DO migration snapshots + concrete legacy expectations', flush=True)
                 stop(p)
                 p = None
                 p = start()

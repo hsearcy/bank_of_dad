@@ -47,13 +47,16 @@ def run_script(conn, script):
 
 def snapshot(conn):
     return {'kids': conn.execute('SELECT * FROM kids ORDER BY id').fetchall(),
-            'ledger': bank.transactions(conn, 1),
-            'history': conn.execute('SELECT * FROM history ORDER BY id').fetchall()}
+            'ledger': conn.execute('SELECT * FROM transactions ORDER BY id').fetchall(),
+            'history': conn.execute('SELECT * FROM history ORDER BY id').fetchall(),
+            'bonds': conn.execute('SELECT * FROM bonds ORDER BY id').fetchall(),
+            'settings': conn.execute('SELECT * FROM settings ORDER BY key').fetchall()}
 
 def migration_snapshot(conn):
-    return {table: {'columns': conn.execute('PRAGMA table_info(' + table + ')').fetchall(),
+    return {'schema': conn.execute("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name").fetchall(),
+            'tables': {table: {'columns': conn.execute('PRAGMA table_info(' + table + ')').fetchall(),
                     'rows': conn.execute('SELECT * FROM ' + table + ' ORDER BY id').fetchall()}
-            for table in ('kids', 'history', 'transactions')}
+            for table in ('kids', 'history', 'transactions')}}
 
 class Bank(DurableObject):
     def __init__(self, ctx, env):
@@ -70,9 +73,11 @@ class Bank(DurableObject):
                 return bank.add_kid(conn, 'Synthetic', '🐣', '#123456')
             if action == 'legacy':
                 run_script(conn, LEGACY)
+                before = migration_snapshot(conn)
                 db._migrate(conn)
+                first = migration_snapshot(conn)
                 db._migrate(conn)
-                return migration_snapshot(conn)
+                return {'before': before, 'first': first, 'second': migration_snapshot(conn)}
             if action in ('gift', 'fail'):
                 return bank.gift(conn, 1, 500, '  chores 🧹  ')
             if action == 'guard':
