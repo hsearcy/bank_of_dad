@@ -107,6 +107,68 @@ class FoundationTest(unittest.TestCase):
         with self.assertRaises(RuntimeError): self.svc.initialize()
         self.assertIsNone(self.storage.db.execute("SELECT name FROM sqlite_master WHERE name='hosted_schema'").fetchone())
 
+    def test_persisted_zero_is_never_initialized(self):
+        for existing in (False, True):
+            with self.subTest(existing=existing):
+                s = Storage()
+                try:
+                    s.db.execute('CREATE TABLE hosted_schema(version INTEGER NOT NULL)')
+                    s.db.execute('INSERT INTO hosted_schema VALUES(0)')
+                    if existing:
+                        s.db.execute('CREATE TABLE legacy(value TEXT)')
+                        s.db.execute("INSERT INTO legacy VALUES('keep')")
+                    svc = FamilyService(s, proxy_factory=lambda cb: cb)
+                    with self.assertRaisesRegex(RuntimeError, 'unsupported schema version'): svc.initialize()
+                    self.assertEqual(s.db.execute('SELECT version FROM hosted_schema').fetchone()[0], 0)
+                    if existing: self.assertEqual(s.db.execute('SELECT value FROM legacy').fetchone()[0], 'keep')
+                    self.assertIsNone(s.db.execute("SELECT name FROM sqlite_master WHERE name='hosted_operations'").fetchone())
+                finally:
+                    s.db.close()
+
+    def test_collection_validation_and_fault_rollback(self):
+        self.svc.mutate('kid', 'add_kid', ['Kid'])
+        for args in ([True], [1, None], [1, 'ALL'], [1, []], [1, 'all', 1], [99]):
+            with self.subTest(args=args), self.assertRaises(ValueError): self.svc.mutate('bad', 'collect_rewards', args)
+        import bank
+        self.storage.db.execute('UPDATE kids SET allowance_anchor_ts=?', (bank.now_ts(self.storage.db)-86400*35,))
+        before = self.svc.read('kids', [])
+        original = self.storage.exec
+        def fail_after_record(sql, *params):
+            result = original(sql, *params)
+            if sql.startswith('INSERT INTO hosted_operations'): raise RuntimeError('after record')
+            return result
+        with patch.object(self.storage, 'exec', side_effect=fail_after_record):
+            with self.assertRaisesRegex(RuntimeError, 'after record'): self.svc.mutate('collect', 'collect_rewards', [1])
+        self.assertEqual(self.svc.read('kids', []), before)
+        self.assertEqual(self.svc.read('transactions', [1]), [])
+        result = self.svc.mutate('collect', 'collect_rewards', [1])
+        self.assertGreater(result, 0)
+        self.assertEqual(self.svc.mutate('collect', 'collect_rewards', [1, 'all']), result)
+        self.assertEqual(self.svc.mutate('again', 'collect_rewards', [1]), 0)
+        with self.assertRaisesRegex(ValueError, 'different payload'): self.svc.mutate('collect', 'collect_rewards', [1, 'interest'])
+
+    def test_bond_relational_guard_before_maturity(self):
+        self.svc.mutate('kid', 'add_kid', ['Kid'])
+        self.storage.db.execute("INSERT INTO bonds(kid_id,term_key,principal_cents,payout_cents,buy_ts,mature_ts,collected) VALUES(1,'1mo',100,99,1700000000,3999999999,0)")
+        before = tuple(self.storage.db.execute('SELECT principal_cents,payout_cents,collected FROM bonds').fetchone())
+        for action in ('read', 'collect', 'gift'):
+            with self.subTest(action=action), self.assertRaisesRegex(ValueError, 'safe limits'):
+                if action == 'read': self.svc.read('kids', [])
+                elif action == 'collect': self.svc.mutate('c', 'collect_rewards', [1])
+                else: self.svc.mutate('g', 'gift', [1, 1])
+        self.assertEqual(tuple(self.storage.db.execute('SELECT principal_cents,payout_cents,collected FROM bonds').fetchone()), before)
+
+    def test_collection_post_guard_rolls_back(self):
+        import bank
+        self.svc.mutate('kid', 'add_kid', ['Kid'])
+        self.storage.db.execute('UPDATE kids SET wallet_cents=?, allowance_anchor_ts=?', (MAX_CENTS, bank.now_ts(self.storage.db)-86400*35))
+        before = self.svc.read('kids', [])
+        with self.assertRaisesRegex(ValueError, 'safe limits'):
+            self.svc.mutate('over', 'collect_rewards', [1, 'allowance'])
+        self.assertEqual(self.svc.read('kids', []), before)
+        self.assertEqual(self.svc.read('transactions', [1]), [])
+        self.assertIsNone(self.storage.db.execute("SELECT operation_id FROM hosted_operations WHERE operation_id='over'").fetchone())
+
 class GuardTest(FoundationTest):
     def test_view_only_unversioned(self):
         self.storage.db.execute('CREATE VIEW orphan AS SELECT 1 AS value')

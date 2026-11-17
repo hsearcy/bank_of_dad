@@ -11,8 +11,9 @@ ID are **not authorization**. Do not wire this to a public Worker yet.
 All access runs in a synchronous DO transaction; the adapter rejects SQL or
 `commit()` outside it. The bank's inner commits are no-ops and exceptions roll
 back the whole outer transaction. Only the explicitly listed read and mutation
-operations are supported. A nonempty unversioned DB and an unknown schema
-version are rejected; no import or migration of existing family data is offered.
+operations are supported. A nonempty unversioned DB, any persisted version 0,
+and any unknown schema version are rejected; no import or reviewed migration of
+existing family data is offered, including marker-only version 0 databases.
 The version marker, original schema/migrations and operation table are created
 atomically. Future schema versions need explicit, transactional upgrade code.
 
@@ -20,6 +21,14 @@ atomically. Future schema versions need explicit, transactional upgrade code.
 interest without a separate interest ledger transaction. This inherited bank
 behavior is intentionally unchanged; ledger entries alone do not explain every
 balance change. Do not present the ledger as a complete accounting audit trail.
+Collection records interest when positive and a history snapshot when rewards or a
+matured bond are collected; a zero-gain bond payout still creates a snapshot.
+History uses the inherited owned-value rules.
+
+`collect_rewards` takes a positive child ID and optional exact kind `all` (default),
+`allowance`, `interest`, or `invest`. Missing children are rejected. The result
+is the change in owned value, not the full investment payout. Its deduplication,
+state bounds and rollback are the same as for other hosted mutations.
 
 A mutation requires a stable, family-scoped operation ID (1–200 characters).
 The canonical payload is the action plus its bound argument values, with omitted
@@ -37,7 +46,8 @@ expiry or pruning policy; do not remove them without a safe retry horizon.
 These limits deliberately favor rejection over precision loss and do not alter the
 self-hosted bank. Inputs and every stored individual balance, signed ledger amount,
 history amount and bond principal/payout must be integer cents of magnitude at most
-1,000,000,000 ($10 million); balances and bond amounts must be nonnegative. Each
+1,000,000,000 ($10 million); balances and bond amounts must be nonnegative.
+Bond payout must be at least principal, even before maturity or if collected. Each
 child's owned total, each pending reward component and combined pending total must
 also be between 0 and that ceiling, both before and after every action. Thus an
 otherwise valid gift, accrual, transfer, or investment may be rejected. Interest
@@ -56,7 +66,9 @@ can become unavailable when accrued totals cross the ceiling. SQL predicates
 check stored numbers before the SQLite-to-JavaScript bridge; bounded row counts,
 timestamps and rates keep intermediate sums/products far below 2**53. This does
 not prove arbitrary corrupted schemas or production-scale performance safe.
-Idempotency records remain unbounded and need a future retention policy.
+Idempotency records remain unbounded and need a future retention policy. No
+supported remediation or recovery exists for corrupt, unsupported-version or
+over-limit data; do not bypass the guards or edit a real database to recover it.
 
 ## Tests (synthetic data only)
 
@@ -74,8 +86,9 @@ logs, process group, and persistent emulator DB under `TMPDIR`, and serves an
 no checked-in deployment config. Wrangler is pinned in `tests_hosted`; set
 `WRANGLER_BIN` to another pinned executable if needed. It compares real unchanged
 bank functions against a separate in-memory SQLite oracle after each tested
-operation, exercises two synthetic families, simultaneous distinct and repeated
-IDs, restart persistence, and an exception after an inner commit. The fake
+operation, including all reward collection modes, exercises synthetic families,
+simultaneous distinct and repeated IDs, restart persistence, and exceptions
+after inner commits. The fake
 SQLite DO unit tests also exercise migration interruption and rollback after the
 idempotency insert; those particular fault points have not been proven in the
 Cloudflare runtime. Tests access no existing family DB.

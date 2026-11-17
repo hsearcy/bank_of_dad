@@ -17,6 +17,7 @@ _MUTATIONS = {
     'add_kid': bank.add_kid, 'gift': bank.gift,
     'save': bank.move_to_savings, 'withdraw': bank.withdraw_savings,
     'spend': bank.spend, 'invest': bank.buy_bond,
+    'collect_rewards': bank.collect_rewards,
 }
 _READS = {'kids': bank.all_kids_state, 'transactions': bank.transactions}
 _VERSION = 1
@@ -77,18 +78,17 @@ class FamilyService:
             if names:
                 raise RuntimeError('unversioned nonempty database requires explicit migration')
             conn.execute('CREATE TABLE hosted_schema (version INTEGER NOT NULL)')
-            conn.execute('INSERT INTO hosted_schema(version) VALUES (0)')
+            conn.execute('INSERT INTO hosted_schema(version) VALUES (1)')
+            _script(conn, db.SCHEMA)
+            db._migrate(conn)
+            conn.execute('CREATE TABLE hosted_operations (operation_id TEXT PRIMARY KEY, payload TEXT NOT NULL, result TEXT NOT NULL)')
+            return
         versions = conn.execute('SELECT version FROM hosted_schema').fetchall()
         if len(versions) != 1 or type(versions[0]['version']) is not int:
             raise RuntimeError('invalid schema marker')
         version = versions[0]['version']
-        if version < 0 or version > _VERSION:
+        if version != _VERSION:
             raise RuntimeError('unsupported schema version')
-        if version == 0:
-            _script(conn, db.SCHEMA)
-            db._migrate(conn)
-            conn.execute('CREATE TABLE hosted_operations (operation_id TEXT PRIMARY KEY, payload TEXT NOT NULL, result TEXT NOT NULL)')
-            conn.execute('UPDATE hosted_schema SET version=1')
 
     def initialize(self):
         return self._transaction(self._initialize)
@@ -112,6 +112,8 @@ class FamilyService:
                 raise ValueError('invalid text argument: ' + key)
         if 'name' in values and not values['name'].strip():
             raise ValueError('name required')
+        if 'kind' in values and (not isinstance(values['kind'], str) or values['kind'] not in ('all', 'allowance', 'interest', 'invest')):
+            raise ValueError('invalid reward kind')
         # Canonicalize argument defaults, but preserve text exactly (including whitespace).
         return json.dumps([action, list(values.values())], ensure_ascii=False, allow_nan=False, separators=(',', ':'))
 
@@ -151,7 +153,7 @@ class FamilyService:
                      integer('allowance_periods_paid', 0, 100000), integer('allowance_enabled', 0, 1),
                      *[timestamp(c) for c in ('allowance_anchor_ts', 'savings_accrued_ts', 'created_ts')]],
             'bonds': [integer('id', 1), integer('kid_id', 1), integer('principal_cents'),
-                      integer('payout_cents'), integer('collected', 0, 1), timestamp('buy_ts'), timestamp('mature_ts')],
+                      integer('payout_cents'), 'payout_cents < principal_cents', integer('collected', 0, 1), timestamp('buy_ts'), timestamp('mature_ts')],
             'transactions': [integer('id', 1), integer('kid_id', 1), integer('amount_cents', -MAX_CENTS),
                              integer('bond_id', 1, MAX_CENTS, True), timestamp('ts')],
             'history': [integer('id', 1), integer('kid_id', 1), integer('networth_cents'),

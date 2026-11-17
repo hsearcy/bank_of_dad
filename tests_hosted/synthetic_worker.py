@@ -17,6 +17,31 @@ class SyntheticBank(FamilyBank):
                 result = self.service.read(args[0], args[1])
             elif action == 'fixture_view':
                 result = self.service._transaction(lambda c: c.execute('CREATE VIEW orphan AS SELECT 1').fetchall())
+            elif action == 'fixture_v0':
+                def zero(c):
+                    c.execute('CREATE TABLE hosted_schema(version INTEGER NOT NULL)')
+                    c.execute('INSERT INTO hosted_schema VALUES(0)')
+                    if args and args[0]:
+                        c.execute('CREATE TABLE legacy(value TEXT)')
+                        c.execute("INSERT INTO legacy VALUES('keep')")
+                    return True
+                result = self.service._transaction(zero)
+            elif action == 'fixture_rewards':
+                def rewards(c):
+                    c.execute('UPDATE kids SET allowance_anchor_ts=1696976000, savings_accrued_ts=1696976000 WHERE id=1')
+                    c.execute('UPDATE bonds SET buy_ts=1696976000, mature_ts=1699568000 WHERE kid_id=1')
+                    return True
+                result = self.service._transaction(rewards)
+            elif action == 'fixture_bad_bond':
+                def bad(c):
+                    c.execute('UPDATE bonds SET payout_cents=principal_cents-1, mature_ts=3999999999 WHERE kid_id=1')
+                    return True
+                result = self.service._transaction(bad)
+            elif action == 'fail_collect':
+                def fail_collect(c):
+                    bank.collect_rewards(c, 1)
+                    raise RuntimeError('after collection commit')
+                result = self.service._transaction(fail_collect)
             elif action == 'fixture_balance':
                 # Fixed synthetic-only literals; never accepts SQL or real data.
                 def fixture(c):

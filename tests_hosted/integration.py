@@ -125,6 +125,52 @@ def main():
                 before_invest = call(port, 'fixture_snapshot', family='accrual')['result']
                 assert 'safe limits' in call(port, 'invest', [1, '3mo', 1000000000], 'i', 'accrual', status=500)['error']
                 assert call(port, 'fixture_snapshot', family='accrual')['result'] == before_invest
+                for existing in (False, True):
+                    family = 'v0-' + str(existing)
+                    call(port, 'fixture_v0', [existing], family=family)
+                    assert 'unsupported schema version' in call(port, 'read', ['kids', []], family=family, status=500)['error']
+                # Independent family and SQLite oracle for each collection mode.
+                for kind in ('allowance', 'interest', 'invest', 'all'):
+                    family = 'reward-' + kind
+                    r = oracle()
+                    try:
+                        for action, args, fn in [('add_kid', ['Rewards'], bank.add_kid), ('save', [1, 200], bank.move_to_savings), ('invest', [1, '1mo', 200], bank.buy_bond)]:
+                            assert call(port, action, args, action, family)['result'] == json.loads(json.dumps(fn(r, *args)))
+                        call(port, 'fixture_rewards', family=family)
+                        r.execute('UPDATE kids SET allowance_anchor_ts=1696976000, savings_accrued_ts=1696976000 WHERE id=1')
+                        r.execute('UPDATE bonds SET buy_ts=1696976000, mature_ts=1699568000 WHERE kid_id=1')
+                        before_reward = call(port, 'read', ['kids', []], family=family)['result']
+                        assert before_reward == bank.all_kids_state(r)
+                        assert 'after collection commit' in call(port, 'fail_collect', family=family, status=500)['error']
+                        assert call(port, 'read', ['kids', []], family=family)['result'] == before_reward
+                        expected = bank.collect_rewards(r, 1, kind)
+                        assert expected > 0
+                        def collect(_): return call(port, 'collect_rewards', [1, kind], 'same', family)['result']
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+                            assert list(pool.map(collect, range(8))) == [expected] * 8
+                        assert call(port, 'collect_rewards', [1, kind], 'new', family)['result'] == 0
+                        assert call(port, 'read', ['kids', []], family=family)['result'] == bank.all_kids_state(r)
+                        assert call(port, 'read', ['transactions', [1]], family=family)['result'] == bank.transactions(r, 1)
+                    finally:
+                        r.close()
+                assert call(port, 'read', ['kids', []], family='b')['result'] == family_b
+                call(port, 'add_kid', ['Concurrent rewards'], 'kid', 'reward-race')
+                call(port, 'fixture_rewards', family='reward-race')
+                def distinct_collect(i):
+                    return call(port, 'collect_rewards', [1, 'allowance'], 'race-' + str(i), 'reward-race')['result']
+                with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+                    results = list(pool.map(distinct_collect, range(8)))
+                assert len([x for x in results if x > 0]) == 1 and results.count(0) == 7, results
+                stop(p); p = None
+                p, port = start_wrangler(src, base, log, env)
+                assert call(port, 'collect_rewards', [1, 'all'], 'same', 'reward-all')['result'] > 0
+                assert call(port, 'collect_rewards', [1, 'all'], 'after-restart', 'reward-all')['result'] == 0
+                assert call(port, 'collect_rewards', [1, 'allowance'], 'later', 'reward-race')['result'] == 0
+                call(port, 'add_kid', ['Bad bond'], 'kid', 'bad-bond')
+                call(port, 'invest', [1, '1mo', 100], 'bond', 'bad-bond')
+                call(port, 'fixture_bad_bond', family='bad-bond')
+                for action, args in [('read', ['kids', []]), ('collect_rewards', [1]), ('gift', [1, 1])]:
+                    assert 'safe limits' in call(port, action, args, 'bad', 'bad-bond', status=500)['error']
                 assert not (base / 'forbidden.db').exists()
                 print('PASS synthetic DO: SQLite oracle, rollback after inner commit, family isolation, restart, concurrent writes and retry')
             except BaseException:
