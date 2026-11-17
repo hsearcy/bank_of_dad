@@ -1,10 +1,26 @@
 """UNSAFE synthetic local fixture, not an application or production service."""
+import json
 import bank
+from js import JSON
 from hosted.object import _rpc_result
 from synthetic_recovery_socket import SyntheticRecoverySocket
 from dashboard_contract import cfg
 
 class PendingDashboard(SyntheticRecoverySocket):
+    async def fixture_call(self, method, args):
+        methods = {'setup': self.fixture_setup, 'grant': self.fixture_grant_owner,
+                   'mutate': self.mutate, 'acknowledge': self.acknowledge,
+                   'fault': self.fixture_fault, 'full_snapshot': self.fixture_full_snapshot}
+        try:
+            value = await methods[method](*args)
+            return _rpc_result({'ok': True, 'value': json.loads(JSON.stringify(value))})
+        except Exception as e:
+            categories = {(ValueError, 'unacknowledged operation'): 'pending',
+                          (ValueError, 'result mismatch'): 'result_mismatch',
+                          (RuntimeError, 'synthetic injected fault'): 'injected_fault',
+                          (PermissionError, 'denied'): 'denied'}
+            return _rpc_result({'ok': False, 'error': categories.get((type(e), str(e)), 'other')})
+
     async def dashboard_read(self, family, token, kind, kid_id=0):
         try:
             a = self.auth
