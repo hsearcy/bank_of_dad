@@ -26,6 +26,52 @@ class DirectoryTest(unittest.TestCase):
         with self.assertRaises(PermissionError): self.d.authorize(bob, family)
         self.assertEqual(len(self.d.members(session, family)), 2)
         self.assertNotEqual(family, family2)
+
+    def test_modified_v1_schema_rejected_before_authorization_or_mutation(self):
+        mutations = [
+            'DROP TABLE invitations',
+            'ALTER TABLE memberships ADD COLUMN extra TEXT',
+            'CREATE TRIGGER evil AFTER INSERT ON sessions BEGIN DELETE FROM memberships; END',
+            'CREATE INDEX extra_index ON memberships(subject)',
+            'DROP TABLE sessions',
+        ]
+        for statement in mutations:
+            with self.subTest(statement=statement):
+                storage = Storage()
+                try:
+                    d = Directory(storage, proxy_factory=lambda cb: cb, clock=lambda: 1000)
+                    family, session = d.create_family(P)
+                    storage.db.execute(statement)
+                    before = list(storage.db.iterdump())
+                    with self.assertRaises(RuntimeError): d.authorize(session, family)
+                    with self.assertRaises(RuntimeError): d.create_family(Q)
+                    self.assertEqual(list(storage.db.iterdump()), before)
+                finally:
+                    storage.db.close()
+
+    def test_rebuilt_table_without_constraints_rejected(self):
+        family, session = self.d.create_family(P)
+        self.storage.db.execute('ALTER TABLE memberships RENAME TO old_memberships')
+        self.storage.db.execute('CREATE TABLE memberships (family TEXT, issuer TEXT, subject TEXT, role TEXT, status TEXT)')
+        self.storage.db.execute('INSERT INTO memberships SELECT * FROM old_memberships')
+        self.storage.db.execute('DROP TABLE old_memberships')
+        with self.assertRaises(RuntimeError): self.d.authorize(session, family)
+
+    def test_unsupported_versions_and_interrupted_initialization(self):
+        original = self.storage.exec
+        def fail(sql, *args):
+            result = original(sql, *args)
+            if sql.startswith('CREATE TABLE sessions'): raise RuntimeError('injected')
+            return result
+        with patch.object(self.storage, 'exec', side_effect=fail):
+            with self.assertRaisesRegex(RuntimeError, 'injected'): self.d.create_family(P)
+        self.assertEqual(self.storage.db.execute("SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").fetchone()[0], 0)
+        family, session = self.d.create_family(P)
+        for version in (0, 2):
+            self.storage.db.execute('UPDATE directory_schema SET version=?', (version,))
+            with self.assertRaisesRegex(RuntimeError, 'unsupported'): self.d.authorize(session, family)
+        self.storage.db.execute('UPDATE directory_schema SET version=1')
+        self.assertEqual(self.d.authorize(session, family)['role'], 'owner')
     def test_bad_and_expired(self):
         for bad in ({}, {'issuer':'http://bad', 'subject':'x'}, {'issuer':'https://id.example', 'subject':''}, None):
             with self.assertRaises(ValueError): self.d.create_family(bad)

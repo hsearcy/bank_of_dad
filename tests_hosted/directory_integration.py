@@ -1,5 +1,6 @@
 """Disposable local Wrangler SQLite test. Never deploy the harness."""
 import concurrent.futures
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -75,7 +76,44 @@ def main():
                 assert call(port, 'accept_invite', Q, invite, ok=False) == 'PermissionError'
                 assert len(call(port, 'members', a, f)) == 2
                 assert call(port, 'authorize', b, g)['role'] == 'owner'
-                print('PASS directory local DO: isolation, invalid input, expiry, rollback, concurrent single-use/revocation, restart')
+                # Actual accept_invite SQL fault points, in the real DO transaction.
+                for stage in ('fail_membership', 'fail_session'):
+                    principal = {'issuer':'https://id.example', 'subject':stage}
+                    token = call(port, 'invite', a, f, 'parent', 100)
+                    before = call(port, 'snapshot')
+                    assert call(port, stage, principal, token, ok=False) == 'InjectedFailure'
+                    assert call(port, 'snapshot') == before, stage
+                    redeemed = call(port, 'accept_invite', principal, token)
+                    assert call(port, 'authorize', redeemed, f)['role'] == 'parent'
+
+                token = call(port, 'invite', a, f, 'parent', 100)
+                before = call(port, 'snapshot')
+                principals = [{'issuer':'https://id.example', 'subject':f'racer-{i}'} for i in range(16)]
+                def distinct_attempt(principal):
+                    status, body = call_response(port, 'accept_invite', principal, token)
+                    if status == 200: return (principal, body['result'])
+                    assert status == 400 and body == {'error':'PermissionError'}, (status, body)
+                    return None
+                with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+                    outcomes = list(pool.map(distinct_attempt, principals))
+                winners = [outcome for outcome in outcomes if outcome is not None]
+                assert len(winners) == 1, outcomes
+                after = call(port, 'snapshot')
+                assert len(after['memberships']) == len(before['memberships']) + 1
+                assert len(after['sessions']) == len(before['sessions']) + 1
+                added = [row for row in after['memberships'] if row not in before['memberships']]
+                assert len(added) == 1 and added[0]['subject'] == winners[0][0]['subject']
+                added_sessions = [row for row in after['sessions'] if row not in before['sessions']]
+                assert len(added_sessions) == 1
+                assert added_sessions[0]['digest'] == hashlib.sha256(winners[0][1].encode('ascii')).hexdigest()
+                assert added_sessions[0]['subject'] == winners[0][0]['subject']
+                assert all(row in after['memberships'] for row in before['memberships'])
+                assert all(row in after['sessions'] for row in before['sessions'])
+                assert call(port, 'authorize', winners[0][1], f)['role'] == 'parent'
+                assert call(port, 'drop_invitations') is True
+                assert call(port, 'authorize', a, f, ok=False) == 'RuntimeError'
+                assert call(port, 'create_family', P, ok=False) == 'RuntimeError'
+                print('PASS directory local DO: isolation, expiry, redemption fault rollback, distinct-principal single-use race, revocation, restart')
             except BaseException:
                 log.flush(); print(logpath.read_text(), file=sys.stderr); raise
             finally: stop(p)

@@ -54,6 +54,16 @@ operations. RPC serialization across Workers is also untested. Directory
 initialization rejects nonempty unversioned storage and unknown versions; no
 schema upgrade or corrupted-data remediation is provided.
 
+Before each directory operation, inside the same transaction as the operation,
+the v1 SQLite catalog is compared to the exact original table definitions and
+primary-key autoindexes; extra user tables, indexes, views and triggers also
+fail closed. Equivalent hand-recreated schemas with different SQL formatting
+are intentionally rejected. Initialization is atomic; version migrations are
+unsupported. This detects catalog changes, not arbitrary invalid row contents,
+physical database/index corruption, hostile writable_schema manipulation, or
+a compromised runtime/caller. SQLite-owned bookkeeping is excluded. No repair
+path is provided; rejection can lock the directory until separately recovered.
+
 ## Local verification
 
 Use the hosted README's isolated environment setup and pinned Wrangler. Run:
@@ -65,7 +75,8 @@ TMPDIR="${TMPDIR:-/tmp}" .venv/bin/python tests_hosted/directory_integration.py
 
 The second command uses a temporary, **unauthenticated synthetic-only** loopback
 Worker, SQLite persistence and made-up principals. It exercises denial across
-families, membership reads, bad input, expiry, rollback, concurrent invite
-redemption and revocation, and restart persistence. It does not verify a public
-API, real OIDC, DO RPC, cross-object revocation, production multi-region races,
-crash durability or deployment. Never deploy the synthetic worker.
+families, membership reads, bad input, expiry, rollback after actual membership
+and session inserts during redemption, distinct-principal concurrent invite
+redemption, schema tampering, revocation, and restart persistence. It does not
+verify a public API, real OIDC, DO RPC, cross-object revocation, production
+multi-region races, crash durability or deployment. Never deploy the synthetic worker.

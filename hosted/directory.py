@@ -15,6 +15,21 @@ from .service import _proxy
 _TOKEN = re.compile(r'^[A-Za-z0-9_-]{43}$')
 _FAMILY = re.compile(r'^[a-f0-9]{32}$')
 
+# Exact SQLite catalog definitions of the only supported schema. SQLite stores
+# the CREATE statements without a trailing semicolon; autoindex NULL SQL is
+# coalesced in SQL for consistent SQLite-to-JavaScript-to-Python conversion.
+_SCHEMA = {
+    'directory_schema': 'CREATE TABLE directory_schema (version INTEGER NOT NULL)',
+    'families': 'CREATE TABLE families (id TEXT PRIMARY KEY)',
+    'memberships': "CREATE TABLE memberships (family TEXT NOT NULL, issuer TEXT NOT NULL, subject TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('owner','parent')), status TEXT NOT NULL CHECK(status IN ('active','disabled')), PRIMARY KEY(family,issuer,subject))",
+    'sessions': 'CREATE TABLE sessions (digest TEXT PRIMARY KEY, issuer TEXT NOT NULL, subject TEXT NOT NULL, expires INTEGER NOT NULL, revoked INTEGER NOT NULL)',
+    'invitations': 'CREATE TABLE invitations (digest TEXT PRIMARY KEY, family TEXT NOT NULL, role TEXT NOT NULL, expires INTEGER NOT NULL, used INTEGER NOT NULL)',
+}
+_CATALOG = {('table', name, name, sql) for name, sql in _SCHEMA.items()} | {
+    ('index', 'sqlite_autoindex_' + name + '_1', name, '')
+    for name in ('families', 'memberships', 'sessions', 'invitations')
+}
+
 
 def _principal(value):
     if not isinstance(value, dict) or set(value) != {'issuer', 'subject'}:
@@ -68,16 +83,17 @@ class Directory:
             if destroy: destroy()
 
     def _initialize(self, c):
-        names = {r['name'] for r in c.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view','trigger','index') AND name NOT LIKE 'sqlite_%'").fetchall()}
+        catalog = c.execute("SELECT type, name, tbl_name, COALESCE(sql, '') AS sql FROM sqlite_master WHERE type IN ('table','view','trigger','index')").fetchall()
+        # Exclude SQLite-owned bookkeeping, but not indexes enforcing our keys.
+        catalog = [r for r in catalog if not r['name'].startswith('sqlite_') or r['name'].startswith('sqlite_autoindex_')]
+        names = {r['name'] for r in catalog}
         if 'directory_schema' not in names:
             if names: raise RuntimeError('unversioned directory')
-            c.execute('CREATE TABLE directory_schema (version INTEGER NOT NULL)')
+            for sql in _SCHEMA.values(): c.execute(sql)
             c.execute('INSERT INTO directory_schema VALUES (1)')
-            c.execute('CREATE TABLE families (id TEXT PRIMARY KEY)')
-            c.execute("CREATE TABLE memberships (family TEXT NOT NULL, issuer TEXT NOT NULL, subject TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('owner','parent')), status TEXT NOT NULL CHECK(status IN ('active','disabled')), PRIMARY KEY(family,issuer,subject))")
-            c.execute('CREATE TABLE sessions (digest TEXT PRIMARY KEY, issuer TEXT NOT NULL, subject TEXT NOT NULL, expires INTEGER NOT NULL, revoked INTEGER NOT NULL)')
-            c.execute('CREATE TABLE invitations (digest TEXT PRIMARY KEY, family TEXT NOT NULL, role TEXT NOT NULL, expires INTEGER NOT NULL, used INTEGER NOT NULL)')
         else:
+            actual = {(r['type'], r['name'], r['tbl_name'], r['sql']) for r in catalog}
+            if actual != _CATALOG: raise RuntimeError('invalid directory schema')
             versions = c.execute('SELECT version FROM directory_schema').fetchall()
             if len(versions) != 1 or versions[0]['version'] != 1: raise RuntimeError('unsupported directory schema')
 
