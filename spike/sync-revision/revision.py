@@ -62,19 +62,27 @@ class RevisionFixture:
         return self.auth.bank._transaction(read)
 
     def mutate(self, family, token, operation_id, action, args, fault=False):
-        if action not in ('add_kid', 'gift', 'save', 'spend'):
+        if action not in ('add_kid', 'gift', 'save', 'withdraw', 'spend', 'invest', 'collect_rewards'):
             raise ValueError('unsupported fixture mutation')
+        def domain_rows(c):
+            # Explicit domain tables only: operation ownership and idempotency
+            # bookkeeping are not bank changes. Catalog validation fences schema.
+            return [c.execute('SELECT * FROM ' + table + ' ORDER BY id').fetchall()
+                    for table in ('kids', 'bonds', 'transactions', 'history')]
         def operation(c):
             self.auth._auth(c, family, token)
             revision = self._revision(c)
+            before = domain_rows(c)
             result, replay = self.auth._mutate_in_transaction(c, family, token, operation_id, action, args)
-            success = result[0] is True if isinstance(result, list) else result is True
-            if not replay and success:
+            changed = not replay and domain_rows(c) != before
+            if fault == 'before_revision':
+                raise RuntimeError('synthetic fault before revision')
+            if changed:
                 if revision >= _MAX_REVISION:
                     raise RuntimeError('revision capacity exceeded')
                 c.execute('UPDATE fixture_revision SET revision=revision+1')
                 revision += 1
-            if fault:
+            if fault is True or fault == 'after_revision':
                 raise RuntimeError('synthetic fault after mutation and revision')
-            return result, revision, not replay and success
+            return result, revision, changed
         return self.auth.bank._transaction(operation)

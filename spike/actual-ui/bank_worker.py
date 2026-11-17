@@ -94,8 +94,7 @@ class SyntheticLiveBank(DurableObject):
             except Exception: pass
 
     async def fixture_mutate(self, family, token, operation_id, action, args):
-        # Only the minimal actual UI contract is exposed in this fixture.
-        if action not in ('gift', 'save', 'spend'):
+        if action not in ('add_kid', 'gift', 'save', 'withdraw', 'spend', 'invest', 'collect_rewards'):
             raise ValueError('unsupported synthetic mutation')
         result, revision, changed = self._revision.mutate(family, token, operation_id, action, args)
         if changed:
