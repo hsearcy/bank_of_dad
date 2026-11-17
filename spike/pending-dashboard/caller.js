@@ -18,8 +18,8 @@ export default {async fetch(request, env) {
   // No dashboard write, including unknown routes, is forwarded to the DO.
   if (request.method !== 'GET') return new Response('read-only synthetic dashboard', {status:405});
   const socket = u.pathname === '/__spike/socket';
-  const family = socket ? u.searchParams.get('family') : request.headers.get('x-spike-family');
-  const token = socket ? u.searchParams.get('token') : request.headers.get('x-spike-token');
+  const family = request.headers.get('x-spike-family');
+  const token = request.headers.get('x-spike-token');
   if (!familyOK(family) || !token) return new Response('denied', {status:403});
   const stub = env.BANK.get(env.BANK.idFromName(family));
   try {
