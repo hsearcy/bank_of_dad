@@ -1,0 +1,8 @@
+{
+  "name": "bod-python-do-local-proof",
+  "main": "worker.py",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["python_workers", "disable_python_external_sdk"],
+  "durable_objects": {"bindings": [{"name": "BANK", "class_name": "Bank"}]},
+  "migrations": [{"tag": "v1", "new_sqlite_classes": ["Bank"]}]
+}
