@@ -33,22 +33,16 @@ def _serialized_accrual_action(fn):
     def run(conn, *args, **kwargs):
         if not isinstance(conn, sqlite3.Connection):
             raise TypeError("bank actions require a sqlite3.Connection; adapters need an equivalent transaction implementation")
-        thread_id = threading.get_ident()
         key = id(conn)
         with _active_connections_lock:
-            active = _active_connections.get(key)
-            if active is not None and active[1] != thread_id:
-                raise RuntimeError("concurrent bank actions on the same connection are unsupported")
-            _active_connections[key] = (conn, thread_id, 1 if active is None else active[2] + 1)
+            if key in _active_connections:
+                raise RuntimeError("overlapping bank actions on the same connection are unsupported")
+            _active_connections[key] = conn
         try:
             return _run_locked(conn, *args, **kwargs)
         finally:
             with _active_connections_lock:
-                _, owner, depth = _active_connections[key]
-                if depth == 1:
-                    del _active_connections[key]
-                else:
-                    _active_connections[key] = (conn, owner, depth - 1)
+                del _active_connections[key]
 
     def _run_locked(conn, *args, **kwargs):
         started = not conn.in_transaction
