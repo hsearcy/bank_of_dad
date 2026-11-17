@@ -67,20 +67,28 @@ const crypto = require('node:crypto');
   const before=await a.evaluate(()=>Promise.all([api('/api/state'),api('/api/transactions?kid_id=1')]));
   // Disabled controls and direct handler calls cannot create optimistic effects.
   for (const p of [a,b]) {
+   const writes=[]; const capture=req=>{if (req.method() !== 'GET') writes.push(req.url());};
+   p.on('request',capture);
    const attempted=await p.evaluate(async()=>{
-    STATE.kids[0].pending_cents=100; STATE.kids[0].pending_allowance_cents=100; render();
-    const btn=document.querySelector('.reward-btn');
+    document.querySelector('#newKidName').value='Blocked child';
+    Object.assign(STATE.kids[0], {pending_cents:300, pending_allowance_cents:100, pending_interest_cents:100, pending_bonds_cents:100}); render();
     const disabled=[...document.querySelectorAll('#dadBtn,#dadPanel button:not(#closeDad),#dadPanel input,.reward-btn,.btn-save,.btn-bond,.btn-spend')].every(x=>x.disabled);
     const view=()=>JSON.stringify({kids:document.querySelector('#kids').innerHTML,modal:document.querySelector('#modal').outerHTML,dad:document.querySelector('#dadPanel').outerHTML,confetti:document.querySelector('#confetti').innerHTML,state:STATE});
     const before=view();
-    btn.click(); btn.onclick({currentTarget:btn,clientX:0,clientY:0});
-    onCollect(STATE.kids[0],'allowance',{currentTarget:btn,clientX:0,clientY:0});
-    for (const sel of ['.btn-save','.btn-bond','.btn-spend','#dadBtn','#addKidBtn','#changePinBtn','.ff']) {const el=document.querySelector(sel); el.click(); await el.onclick?.({currentTarget:el});}
+    const rewards=[...document.querySelectorAll('.reward-btn')];
+    if (rewards.length !== 3) throw Error('expected all three reward kinds');
+    for (const el of rewards) {el.click(); el.onclick({currentTarget:el,clientX:0,clientY:0}); onCollect(STATE.kids[0],el.dataset.kind,{currentTarget:el,clientX:0,clientY:0});}
+    for (const sel of ['.btn-save','.btn-bond','.btn-spend','#dadBtn','#addKidBtn','#changePinBtn','.ff']) {
+     const elements=[...document.querySelectorAll(sel)]; if (!elements.length) throw Error(`missing ${sel}`);
+     for (const el of elements) {el.click(); await el.onclick?.({currentTarget:el});}
+    }
     await Promise.all([openSaveModal(STATE.kids[0]),openBondModal(STATE.kids[0]),openSpendModal(STATE.kids[0]),openEditHistory(STATE.kids[0]),openDad(),ensurePinSetup(),changePin(),renderDadPanel(),renderDadRates()]);
     await new Promise(r=>setTimeout(r,100));
     return {disabled,unchanged:before===view()};
    });
    assert.deepEqual(attempted,{disabled:true,unchanged:true});
+   assert.deepEqual(writes,[]); p.off('request',capture);
+   assert.equal(await p.locator('.gift-btn,.alw-btn,.edithist-btn,#saveRates,.etx-save,.etx-del').count(),0);
    await p.evaluate(()=>refresh());
   }
   // Hidden money controls cannot be clicked; exercise visible read-only controls.
@@ -107,7 +115,15 @@ const crypto = require('node:crypto');
   const after=await a.evaluate(()=>Promise.all([api('/api/state'),api('/api/transactions?kid_id=1')]));
   for (const key of ['wallet_cents','savings_cents','owned_cents','history']) assert.deepEqual(after[0].kids[0][key],before[0].kids[0][key]);
   assert.deepEqual(after[1].transactions,before[1].transactions);
-  await mutate(F,ta[0],'gift',[1,200,'driver gift']);
+  const giftResult=await mutate(F,ta[0],'gift',[1,200,'driver gift']);
+  assert.equal(giftResult,true);
+  const afterGift=await snapshot(F);
+  assert.notDeepEqual(afterGift,beforeAll[0], 'snapshot detects authorized transaction');
+  assert.notDeepEqual(afterGift.tables.kids,beforeAll[0].tables.kids);
+  assert.notDeepEqual(afterGift.tables.transactions,beforeAll[0].tables.transactions);
+  assert.notDeepEqual(afterGift.tables.sqlite_sequence,beforeAll[0].tables.sqlite_sequence);
+  assert.deepEqual(afterGift.schema,beforeAll[0].schema);
+  assert.deepEqual(await snapshot(G),beforeAll[1]);
   await Promise.all([a,b].map(p=>dashboard(p,7,0,7)));
   await quiet(); assert.deepEqual(frames,[['{"type":"invalidate"}'],['{"type":"invalidate"}']]);
   await mutate(F,ta[1],'save',[1,100]);
@@ -153,6 +169,22 @@ const crypto = require('node:crypto');
   await quiet();
   assert.equal(await b.locator('#spike-status').textContent(),'connected');
   await dashboard(b,6,1,7);
+  // Newer failure supersedes an already received older success.
+  let releaseSuccess, seenSuccess;
+  const successGate=new Promise(r=>releaseSuccess=r), gotSuccess=new Promise(r=>seenSuccess=r);
+  let reverseCalls=0;
+  const reverseRoute=async route=>{
+   if (++reverseCalls === 1) {const response=await route.fetch(); seenSuccess(); await successGate; await route.fulfill({response});}
+   else await route.fulfill({status:500,body:'unavailable'});
+  };
+  await b.route('**/api/state',reverseRoute);
+  await b.evaluate(()=>{window.olderSuccess=refresh();}); await gotSuccess;
+  const countBeforeFailure=await b.evaluate(()=>renders);
+  assert.match(await b.evaluate(()=>refresh().then(()=>'unexpected',e=>e.message)),/failed/);
+  releaseSuccess(); assert.equal(await b.evaluate(()=>olderSuccess),false);
+  await b.unroute('**/api/state',reverseRoute); assert.equal(reverseCalls,2);
+  assert.equal(await b.evaluate(()=>renders),countBeforeFailure);
+  await dashboard(b,6,1,7);
   // Offline peer misses a real commit, then gets an authorized fresh snapshot.
   await b.evaluate(()=>sockets.at(-1).close());
   await b.waitForFunction(()=>document.querySelector('#kids').children.length===0);
@@ -181,6 +213,16 @@ const crypto = require('node:crypto');
   release(); assert.equal(await b.evaluate(()=>held),'AbortError');
   await b.evaluate(()=>{oldMessage({data:'{"type":"invalidate"}'}); oldClose();});
   await dashboard(b,5,0,5);
+  // A failed reload from the old family cannot mark the new family failed.
+  let releaseCrossFailure, sawCrossFailure;
+  const crossFailureGate=new Promise(r=>releaseCrossFailure=r), crossFailureSeen=new Promise(r=>sawCrossFailure=r);
+  await b.route('**/api/state',async route=>{sawCrossFailure(); await crossFailureGate; await route.fulfill({status:500,body:'unavailable'});},{times:1});
+  await b.evaluate(()=>document.dispatchEvent(new Event('visibilitychange'))); await crossFailureSeen;
+  await b.locator('#spike-family').selectOption(F); await connect(b,F,ta[1]); await dashboard(b,5.5,1,6.5);
+  const crossFailedResponse=b.waitForResponse(r=>r.url().endsWith('/api/state') && r.status()===500);
+  releaseCrossFailure(); await crossFailedResponse; await quiet();
+  assert.equal(await b.locator('#spike-status').textContent(),'connected'); await dashboard(b,5.5,1,6.5);
+  await b.locator('#spike-family').selectOption(G); await connect(b,G,tb[0]); await dashboard(b,5,0,5);
   const beforeCrossFamily = frames[1].length;
   // A test-driver mutation never invalidates another family.
   await mutate(F,ta[0],'gift',[1,100,'cross-family test']);
