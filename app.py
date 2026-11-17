@@ -9,7 +9,10 @@ Host/port are configurable via env (so we don't assume any fixed port):
 
 import os
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, abort, jsonify, render_template, request
+from flask_sock import Sock
+
+from realtime import Updates
 
 import bank
 import config
@@ -20,6 +23,43 @@ app = Flask(__name__)
 # a manual hard-refresh (low-traffic local app, caching buys us nothing here).
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 db.init_db()
+# One self-hosted process, with a bounded pending invalidation per connection.
+app.config["SOCK_SERVER_OPTIONS"] = {"ping_interval": 25, "max_message_size": 1024}
+sock = Sock(app)
+updates = Updates()
+
+
+@app.before_request
+def updates_origin():
+    # The dashboard itself is intentionally unauthenticated. Do not turn this
+    # new read channel into a cross-origin subscription (including null origins).
+    if request.path == "/api/updates":
+        if request.headers.get("Origin") != request.host_url.rstrip("/"):
+            abort(403)
+
+
+@sock.route("/api/updates")
+def api_updates(ws):
+    updates.serve(ws)
+
+
+# Domain functions commit before these routes return. Never broadcast reads,
+# failed business operations, PIN verification, denied requests or exceptions.
+MUTATION_ENDPOINTS = {
+    "api_collect", "api_save", "api_withdraw", "api_bond", "api_spend",
+    "api_admin_set_pin", "api_gift", "api_add_kid", "api_update_kid",
+    "api_set_allowance", "api_tx_delete", "api_tx_edit", "api_set_rates",
+    "api_fastforward",
+}
+
+
+@app.after_request
+def notify_mutation(response):
+    if (request.method == "POST" and request.endpoint in MUTATION_ENDPOINTS
+            and 200 <= response.status_code < 300 and response.is_json
+            and response.get_json().get("ok") is True):
+        updates.publish()
+    return response
 
 
 def cfg(conn):

@@ -76,7 +76,7 @@ class MoneyChartFrontendTests(unittest.TestCase):
 
     def test_expanded_graph_modal_contains_future_controls(self):
         self.assertIn("function openGraphModal", self.source)
-        self.assertIn("moneyChart(k, true)", self.source)
+        self.assertIn("moneyChart(current, true)", self.source)
         self.assertIn('class="graph-future-controls"', self.source)
         self.assertIn(".graph-modal-card", self.styles)
 

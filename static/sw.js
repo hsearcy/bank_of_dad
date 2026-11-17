@@ -1,5 +1,5 @@
 /* Bank of Dad service worker — app-shell cache for installable/offline PWA. */
-const CACHE = "bod-v10";
+const CACHE = "bod-v11";
 const SHELL = [
   "/",
   "/static/style.css",
