@@ -34,7 +34,21 @@ Use Dad controls to adjust allowances and rates, give money, edit transactions, 
 | `BANK_OF_DAD_PORT` | `5001` | Listen port |
 | `BANK_OF_DAD_DB` | `data/bank.db` in this directory | SQLite database path |
 
-For example, `BANK_OF_DAD_PORT=5005 ./run.sh`. Back up your database separately; it contains children's names, balances, history and the PIN hash. Never commit it, local environment files, or backups to a public repository. The app creates the database directory when needed. Configure rules in `config.py` or use the Dad panel for per-child allowances and rates.
+For example, `BANK_OF_DAD_PORT=5005 ./run.sh`. The app creates the database directory when needed. Configure rules in `config.py` or use the Dad panel for per-child allowances and rates.
+
+## Local backup and restore
+
+Make regular backups to a private location outside the repository. A backup contains private family data, including children's names, balances, history, and the PIN hash. **Never commit or publicly share a database or backup**, even if its filename is not ignored by Git. Restrict access, encrypt backups where appropriate, and retain multiple dated copies in a separate safe location.
+
+Use Python 3 on the machine with the database; specify both the existing database and a **new** output path (the output directory must already exist):
+
+```sh
+python3 tools/backup_local.py /path/to/data/bank.db /private/backups/bank-2026-01-01.db
+```
+
+The source is the path configured by `BANK_OF_DAD_DB`, or `data/bank.db` in this directory by default. The tool uses SQLite's online backup API, so it can make a consistent snapshot while the app is running, including committed WAL data. It opens the database read-only, checks the snapshot's integrity, creates it with owner-only permissions, and refuses to overwrite an existing path. SQLite may need access to the source directory and WAL shared-memory sidecars for a live WAL database. Publication requires hard-link support in the backup directory. A crash or forced termination may leave a private `.bod-backup-*` temporary file there; remove it when no backup is running. This exports a full SQLite database, not a sanitized or encrypted export.
+
+To restore, **stop the service and all other database clients first**. Preserve the existing database and its `-wal` and `-shm` sidecars in a separate safe location before changing anything. Copy the chosen backup to the configured database path with owner-only permissions, making sure old sidecars are not left beside the restored database, then start the service and check the data. Do not overwrite your only backup. Store and periodically test multiple backups; an integrity check does not prove that a backup contains the data or point in time you intended.
 
 ## Security limitations
 
