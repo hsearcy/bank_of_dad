@@ -1,8 +1,9 @@
-// SYNTHETIC LOOPBACK ONLY. Privileged setup is deliberately unauthenticated.
+// NEVER DEPLOY: internal synthetic worker, reachable only via the local harness.
 const validFamily = f => /^[ab]{32}$/.test(f || '');
 export default {async fetch(request, env) {
   const u = new URL(request.url);
   if (!['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)) return new Response('loopback only', {status:403});
+  if (!u.pathname.startsWith('/__test/') && request.method !== 'GET') return new Response('read-only synthetic dashboard', {status:405});
   if (u.pathname === '/') {
     const asset = await env.ASSETS.fetch(new URL('/index.html', u));
     const html = (await asset.text()).replace('<script src="/static/app.js">', '<script src="/static/synthetic.js"></script><script src="/static/app.js">');
@@ -11,11 +12,21 @@ export default {async fetch(request, env) {
   // Never serve the copied Python sources, state, or configuration as assets.
   if (/^\/static\/[\w.-]+$/.test(u.pathname) && u.pathname !== '/static/sw.js') return env.ASSETS.fetch(request);
   try {
-    if (u.pathname === '/__spike/setup' && request.method === 'POST') {
-      const {family} = await request.json();
-      if (!validFamily(family)) throw Error('family');
-      return Response.json(await env.BANK.get(env.BANK.idFromName(family)).fixture_setup(family));
+    if (u.pathname.startsWith('/__test/')) {
+      if (request.method !== 'POST' || !env.TEST_SECRET || request.headers.get('x-test-secret') !== env.TEST_SECRET) return new Response('test driver denied', {status:403});
+      if (u.pathname === '/__test/setup') {
+        const {family} = await request.json();
+        if (!validFamily(family)) throw Error('family');
+        return Response.json(await env.BANK.get(env.BANK.idFromName(family)).fixture_setup(family));
+      }
+      if (u.pathname === '/__test/mutate') {
+        const {family,token,operation,action,args} = await request.json();
+        if (!validFamily(family) || !token || !operation || !Array.isArray(args)) throw Error('test input');
+        return Response.json(await env.BANK.get(env.BANK.idFromName(family)).fixture_mutate(family,token,operation,action,args));
+      }
+      return new Response('unknown test control', {status:404});
     }
+    if (request.method !== 'GET') return new Response('read-only synthetic dashboard', {status:405});
     const family = u.pathname === '/__spike/socket' ? u.searchParams.get('family') : request.headers.get('x-spike-family');
     const token = u.pathname === '/__spike/socket' ? u.searchParams.get('token') : request.headers.get('x-spike-token');
     if (!validFamily(family) || !token) throw Error('scope');
@@ -32,21 +43,6 @@ export default {async fetch(request, env) {
       if (u.pathname === '/api/admin/status') {
         await stub.read(family,token,'kids',[]);
         return Response.json({pin_set:false}); // fixture bypass only, no real PIN claim
-      }
-    }
-    if (request.method === 'POST') {
-      const b = await request.json();
-      const routes = {
-        '/api/admin/gift':['gift',[b.kid_id,b.amount_cents,b.note ?? b.reason ?? '']],
-        '/api/save':['save',[b.kid_id,b.amount_cents]],
-        '/api/spend':['spend',[b.kid_id,b.amount_cents,b.reason ?? '']],
-      };
-      if (routes[u.pathname]) {
-        const [action,args] = routes[u.pathname];
-        const operation = request.headers.get('x-spike-operation');
-        if (!operation || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(operation)) return Response.json({error:'missing synthetic operation ID'},{status:400});
-        const result = await stub.fixture_mutate(family,token,operation,action,args);
-        return Response.json(action === 'gift' ? {ok:result} : {ok:result[0],message:result[1]});
       }
     }
     return new Response('unsupported synthetic contract', {status:404});

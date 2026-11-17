@@ -1,5 +1,5 @@
 """Run only on disposable local Wrangler storage; no Cloudflare deployment."""
-import ast, json, os, shutil, subprocess, sys, tempfile
+import ast, json, os, secrets, shutil, subprocess, sys, tempfile
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tests_hosted'))
@@ -24,12 +24,22 @@ def main():
         shutil.copyfile(ROOT/'spike/actual-ui/synthetic.js', assets/'static/synthetic.js')
         (src/'wrangler.jsonc').write_text(json.dumps({'name':'bod-actual-synthetic-bank','main':'worker.py','compatibility_date':'2026-09-01','compatibility_flags':['python_workers','disable_python_external_sdk'],'durable_objects':{'bindings':[{'name':'BANK','class_name':'SyntheticLiveBank'}]},'migrations':[{'tag':'v1','new_sqlite_classes':['SyntheticLiveBank']}]}))
         (src/'caller.jsonc').write_text(json.dumps({'name':'bod-actual-synthetic-ui','main':'caller.js','compatibility_date':'2026-09-01','assets':{'directory':'assets','html_handling':'none','binding':'ASSETS','run_worker_first':True},'durable_objects':{'bindings':[{'name':'BANK','class_name':'SyntheticLiveBank','script_name':'bod-actual-synthetic-bank'}]}}))
-        p=None
+        p=None; proxy=None
         with (base/'wrangler.log').open('w+') as log:
             try:
                 env=isolated_environment(base)
+                secret=secrets.token_hex(32)
+                caller=json.loads((src/'caller.jsonc').read_text()); caller['vars']={'TEST_SECRET':secret}
+                (src/'caller.jsonc').write_text(json.dumps(caller))
                 p,port=start_wrangler(src,base,log,env,command=[WRANGLER,'dev','-c',str(src/'caller.jsonc')])
-                env['BASE_URL']=f'http://127.0.0.1:{port}'
+                env['INTERNAL_PORT']=str(port)
+                env['DRIVER_URL']=f'http://127.0.0.1:{port}'
+                env['TEST_SECRET']=secret
+                proxy_env=env.copy()
+                proxy_env.pop('TEST_SECRET'); proxy_env.pop('DRIVER_URL')
+                proxy=subprocess.Popen(['node',str(ROOT/'spike/actual-ui/dashboard-proxy.cjs')],env=proxy_env,stdout=subprocess.PIPE,text=True)
+                proxy_port=int(proxy.stdout.readline().strip())
+                env['BASE_URL']=f'http://127.0.0.1:{proxy_port}'
                 if '--serve' in sys.argv:
                     print(f'SYNTHETIC ONLY: {env["BASE_URL"]} (Ctrl-C to stop and delete state)', flush=True)
                     p.wait()
@@ -38,6 +48,8 @@ def main():
             except BaseException:
                 log.flush(); print((base/'wrangler.log').read_text(),flush=True); raise
             finally:
+                if proxy:
+                    proxy.terminate(); proxy.wait(timeout=10)
                 stop(p)
                 if (base/'forbidden.db').exists():
                     raise RuntimeError('unexpected self-host DB created')

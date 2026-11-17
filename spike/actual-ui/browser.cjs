@@ -2,6 +2,7 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 (async () => {
  const browsers = [];
  const errors = [];
@@ -23,8 +24,17 @@ const path = require('node:path');
   assert.equal(html.replace('<script src="/static/synthetic.js"></script>',''),fs.readFileSync(path.join(root,'templates/index.html'),'utf8'));
   for (const file of ['app.js','style.css']) assert.equal(await (await a.request.get(process.env.BASE_URL+'/static/'+file)).text(),fs.readFileSync(path.join(root,'static',file),'utf8'));
   assert.equal(await a.evaluate(()=>navigator.serviceWorker.getRegistrations().then(x=>x.length)),0);
-  const setup = async family => {const r=await a.request.post(process.env.BASE_URL+'/__spike/setup',{data:{family}}); assert.equal(r.status(),200); return r.json();};
+  // Driver uses the private worker port and per-run secret, never the dashboard ingress.
+  const control = async (route, data) => {
+   const r=await fetch(process.env.DRIVER_URL+'/__test/'+route,{method:'POST',headers:{'content-type':'application/json','x-test-secret':process.env.TEST_SECRET},body:JSON.stringify(data)});
+   assert.equal(r.status,200); return r.json();
+  };
+  const setup=family=>control('setup',{family});
+  const mutate=(family,token,action,args)=>control('mutate',{family,token,action,args,operation:crypto.randomUUID()});
   const ta=await setup(F), tb=await setup(G);
+  assert.equal((await a.request.get(process.env.BASE_URL+'/__test/mutate')).status(),405);
+  assert.equal((await a.request.post(process.env.BASE_URL+'/__test/setup',{data:{family:F},headers:{'x-test-secret':process.env.TEST_SECRET}})).status(),405);
+  assert.equal((await fetch(process.env.DRIVER_URL+'/__test/setup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({family:F})})).status,403);
   const connect = async (p,f,t) => {
    await p.locator('#spike-family').selectOption(f);
    await p.locator('#spike-token').fill(t);
@@ -42,14 +52,34 @@ const path = require('node:path');
   assert.equal(await a.locator('#kids').textContent(),'');
   await Promise.all([connect(a,F,ta[0]),connect(b,F,ta[1])]);
   assert.match(await a.evaluate(()=>api('/api/not-supported').then(()=>'',e=>e.message)), /failed or unsupported/);
-  assert.match(await a.evaluate(()=>api('/api/not-supported',{x:1}).then(()=>'',e=>e.message)), /failed or unsupported/);
+  assert.match(await a.evaluate(()=>api('/api/not-supported',{x:1}).then(()=>'',e=>e.message)), /Read-only/);
   await Promise.all([a,b].map(p=>dashboard(p,5,0,5)));
-  await a.locator('#dadBtn').click();
-  await a.locator('.gift-amt').fill('2'); await a.locator('.gift-note').fill('UI gift'); await a.locator('.gift-btn').click();
+  const before=await a.evaluate(()=>Promise.all([api('/api/state'),api('/api/transactions?kid_id=1')]));
+  // Hidden money controls cannot be clicked; exercise visible read-only controls.
+  for (const p of [a,b]) {
+   for (const sel of ['#dadBtn','.btn-save','.btn-bond','.btn-spend','.reward-btn']) assert.equal(await p.locator(sel+':visible').count(),0);
+   await p.locator('.btn-whatif').click(); await p.locator('.wi-save').fill('1'); await p.locator('#modal .modal-go').click();
+   await p.locator('.rng').first().click(); await p.locator('.btn-expand').click(); await p.locator('.graph-close').click();
+   await p.locator('.btn-history').click(); await p.locator('#modal .close').click();
+  }
+  for (const route of ['/', '/static/app.js', '/api/admin/gift', '/api/save', '/api/spend', '/unknown']) {
+   const r=await fetch(process.env.DRIVER_URL+route,{method:'POST',headers:{'x-spike-family':F,'x-spike-token':ta[0]},body:'{}'});
+   assert.equal(r.status,405,'internal dashboard '+route);
+  }
+  for (const route of ['/api/admin/gift','/api/save','/api/spend','/api/withdraw','/api/collect','/api/bond','/api/unsupported','/anything']) {
+   const r=await a.request.post(process.env.BASE_URL+route,{headers:{'x-spike-family':F,'x-spike-token':ta[0]},data:{kid_id:1,amount_cents:500,note:'forbidden'}});
+   assert.equal(r.status(),405,route);
+  }
+  for (const method of ['PUT','PATCH','DELETE']) {
+   const r=await a.request.fetch(process.env.BASE_URL+'/api/save',{method,data:{kid_id:1,amount_cents:100}}); assert.equal(r.status(),405);
+  }
+  const after=await a.evaluate(()=>Promise.all([api('/api/state'),api('/api/transactions?kid_id=1')]));
+  for (const key of ['wallet_cents','savings_cents','owned_cents','history']) assert.deepEqual(after[0].kids[0][key],before[0].kids[0][key]);
+  assert.deepEqual(after[1].transactions,before[1].transactions);
+  await mutate(F,ta[0],'gift',[1,200,'driver gift']);
   await Promise.all([a,b].map(p=>dashboard(p,7,0,7)));
   await quiet(); assert.deepEqual(frames,[['{"type":"invalidate"}'],['{"type":"invalidate"}']]);
-  await a.locator('#closeDad').click();
-  await b.locator('.btn-save').click(); await b.locator('.custom-amt').fill('1'); await b.locator('[data-act="save"]').click();
+  await mutate(F,ta[1],'save',[1,100]);
   await Promise.all([a,b].map(p=>dashboard(p,6,1,7)));
   await quiet(); assert.equal(frames[0].length,2); assert.equal(frames[1].length,2);
   // Charts contain server timestamps: compare concrete state plus history as
@@ -61,7 +91,7 @@ const path = require('node:path');
   assert.deepEqual(sa.config,sb.config);
   for (const p of [a,b]) {
    await p.locator('.btn-history').click();
-   await p.locator('.tx-note').filter({hasText:'UI gift'}).waitFor();
+   await p.locator('.tx-note').filter({hasText:'driver gift'}).waitFor();
    assert.equal(await p.locator('.tx-row').count(),2);
    await p.locator('#modal .close').click();
   }
@@ -80,16 +110,17 @@ const path = require('node:path');
   // Offline peer misses a real commit, then gets an authorized fresh snapshot.
   await b.evaluate(()=>sockets.at(-1).close());
   await b.waitForFunction(()=>document.querySelector('#kids').children.length===0);
-  await a.locator('.btn-spend').click(); await a.locator('.spend-reason').fill('UI spend'); await a.locator('.spend-amt').fill('0.5'); await a.locator('.modal-go').click();
+  await mutate(F,ta[0],'spend',[1,50,'driver spend']);
   await dashboard(a,5.5,1,6.5);
   await a.locator('.btn-history').click();
-  await a.locator('.tx-note').filter({hasText:'UI spend'}).waitFor();
+  await a.locator('.tx-note').filter({hasText:'driver spend'}).waitFor();
   assert.equal(await a.locator('.tx-row').count(),3);
   await a.locator('#modal .close').click();
   await connect(b,F,ta[1]); await dashboard(b,5.5,1,6.5);
   await b.reload(); await connect(b,F,ta[1]); await dashboard(b,5.5,1,6.5);
   const denied=await a.request.get(process.env.BASE_URL+'/api/state',{headers:{'x-spike-family':G,'x-spike-token':ta[0]}}); assert.equal(denied.status(),403);
-  const deniedWrite=await a.request.post(process.env.BASE_URL+'/api/admin/gift',{headers:{'x-spike-family':G,'x-spike-token':ta[0],'x-spike-operation':'12345678-1234-4123-8123-123456789abc'},data:{kid_id:1,amount_cents:900,note:'wrong'}}); assert.equal(deniedWrite.status(),403);
+  const deniedDriver=await fetch(process.env.DRIVER_URL+'/__test/mutate',{method:'POST',headers:{'content-type':'application/json','x-test-secret':process.env.TEST_SECRET},body:JSON.stringify({family:G,token:ta[0],operation:crypto.randomUUID(),action:'gift',args:[1,900,'wrong']})}); assert.equal(deniedDriver.status,403);
+  const deniedWrite=await a.request.post(process.env.BASE_URL+'/api/admin/gift',{headers:{'x-spike-family':G,'x-spike-token':ta[0],'x-spike-operation':'12345678-1234-4123-8123-123456789abc'},data:{kid_id:1,amount_cents:900,note:'wrong'}}); assert.equal(deniedWrite.status(),405);
   assert.equal(await b.evaluate(([f,t])=>new Promise(resolve=>{const w=new WebSocket(`ws://${location.host}/__spike/socket?family=${f}&token=${t}`); w.onopen=()=>{w.close();resolve(false)}; w.onerror=()=>resolve(true)}),[G,ta[0]]),true);
   // Hold a real A state response; switch to B then deliver it and captured A callbacks.
   let release, captured;
@@ -103,18 +134,11 @@ const path = require('node:path');
   await b.evaluate(()=>{oldMessage({data:'{"type":"invalidate"}'}); oldClose();});
   await dashboard(b,5,0,5);
   const beforeCrossFamily = frames[1].length;
-  // Hold a committed A gift completion across logout: no stale Dad render.
-  await connect(a,F,ta[0]); await a.locator('#dadBtn').click();
-  let releaseMutation, committed;
-  const mutationGate=new Promise(r=>releaseMutation=r), commitSeen=new Promise(r=>committed=r);
-  await a.route('**/api/admin/gift',async route=>{const response=await route.fetch(); committed(); await mutationGate; await route.fulfill({response});},{times:1});
-  await a.locator('.gift-amt').fill('1'); await a.locator('.gift-btn').click(); await commitSeen;
-  await a.locator('#spike-logout').click(); releaseMutation(); await quiet();
-  assert.equal(await a.locator('#kids').textContent(),''); assert.equal(await a.locator('#spike-token').inputValue(),'');
-  assert.equal(await a.locator('#dadPanel').evaluate(x=>x.classList.contains('hidden')),true);
-  await dashboard(b,5,0,5); // no cross-family push or writes
+  // A test-driver mutation never invalidates another family.
+  await mutate(F,ta[0],'gift',[1,100,'cross-family test']);
+  await quiet(); await dashboard(b,5,0,5);
   assert.equal(frames[1].length,beforeCrossFamily);
-  await connect(a,F,ta[0]); await dashboard(a,6.5,1,7.5);
+  await dashboard(a,6.5,1,7.5);
   // Hold history across logout, including modal content removal.
   let releaseHistory, historySeen;
   const historyGate=new Promise(r=>releaseHistory=r), gotHistory=new Promise(r=>historySeen=r);
@@ -124,58 +148,15 @@ const path = require('node:path');
   assert.equal(await a.locator('#kids').textContent(),'');
   assert.equal(await a.locator('#modal').evaluate(x=>x.classList.contains('hidden')),true);
   await b.locator('#spike-logout').click();
-  // Commit at the real server, then lose only the response. Reload and explicitly
-  // retry the exact operation; the second browser sees the single real commit.
+  // A visible-tab resume reconciles a deliberately dropped push with polling off.
   await Promise.all([connect(a,F,ta[0]),connect(b,F,ta[1])]);
-  await a.locator('#dadBtn').click();
-  const writes=[];
-  await a.route('**/api/admin/gift',async route=>{
-   writes.push({id:route.request().headers()['x-spike-operation'],body:route.request().postData()});
-   if (writes.length===1) {const response=await route.fetch(); assert.equal(response.status(),200); await route.abort('failed');}
-   else if (writes.length===2) await route.fulfill({status:503,contentType:'text/plain',body:'unavailable'});
-   else await route.continue();
-  });
-  await a.locator('.gift-amt').fill('3'); await a.locator('.gift-note').fill('lost response'); await a.locator('.gift-btn').click();
-  await a.waitForFunction(()=>document.querySelector('#spike-status').textContent.includes('unresolved'));
-  await dashboard(b,9.5,1,10.5);
-  const stored=await a.evaluate(()=>sessionStorage.getItem('bod-synthetic-pending-v1'));
-  assert.ok(stored); assert.ok(!stored.includes(ta[0]));
-  const unavailable=a.waitForResponse(r=>r.url().endsWith('/api/admin/gift') && r.status()===503);
-  await a.locator('#spike-retry').click(); await unavailable;
-  await a.waitForFunction(()=>!document.querySelector('#spike-retry').hidden && document.querySelector('#spike-status').textContent.includes('unresolved'));
-  assert.equal(await a.evaluate(()=>sessionStorage.getItem('bod-synthetic-pending-v1')),stored);
-  await a.reload(); await a.locator('#spike-token').fill(ta[0]); await a.locator('#spike-connect').click();
-  await a.waitForFunction(()=>document.querySelector('#spike-status').textContent.includes('unresolved'));
-  await a.locator('#spike-retry').click();
-  await a.waitForFunction(()=>document.querySelector('#spike-status').textContent==='connected');
-  assert.deepEqual(writes[0],writes[1]); assert.deepEqual(writes[0],writes[2]); assert.equal(writes.length,3);
-  assert.equal(await a.evaluate(()=>sessionStorage.getItem('bod-synthetic-pending-v1')),null);
-  await dashboard(a,9.5,1,10.5);
-  await b.locator('.btn-history').click();
-  await b.locator('.tx-note').filter({hasText:'lost response'}).first().waitFor();
-  assert.equal(await b.locator('.tx-note').filter({hasText:'lost response'}).count(),1);
-  await b.locator('#modal .close').click();
-  // Suppress push only, then deliver a controlled visible-tab event and observe
-  // a real new snapshot. Polling is disabled in the synthetic fixture.
   await b.evaluate(()=>{sockets.findLast(s=>s.readyState===WebSocket.OPEN).onmessage=null;});
-  await a.locator('#dadBtn').click(); await a.locator('.gift-amt').fill('1'); await a.locator('.gift-note').fill('resume'); await a.locator('.gift-btn').click();
-  await dashboard(a,10.5,1,11.5); await quiet(); await dashboard(b,9.5,1,10.5);
+  await mutate(F,ta[0],'gift',[1,100,'resume']);
+  await dashboard(a,7.5,1,8.5); await quiet(); await dashboard(b,6.5,1,7.5);
   await b.evaluate(()=>{Object.defineProperty(document,'visibilityState',{configurable:true,value:'visible'}); document.dispatchEvent(new Event('visibilitychange'));});
-  await dashboard(b,10.5,1,11.5);
-  // An unresolved write blocks even a different mutation, and account switch
-  // and logout deliberately discard the tab's pending record.
-  await a.unroute('**/api/admin/gift');
-  await a.route('**/api/admin/gift',route=>route.abort('failed'),{times:2});
-  assert.match(await a.evaluate(()=>api('/api/admin/gift',{kid_id:1,amount_cents:100,note:'blocked'}).then(()=>'',e=>e.message)),/unresolved/);
-  assert.match(await a.evaluate(()=>api('/api/save',{kid_id:1,amount_cents:100}).then(()=>'',e=>e.message)),/Unresolved/);
-  assert.ok(await a.evaluate(()=>sessionStorage.getItem('bod-synthetic-pending-v1')));
-  await a.locator('#spike-family').selectOption(G);
-  assert.equal(await a.evaluate(()=>sessionStorage.getItem('bod-synthetic-pending-v1')),null);
-  await connect(a,F,ta[0]);
-  assert.match(await a.evaluate(()=>api('/api/admin/gift',{kid_id:1,amount_cents:100,note:'logout'}).then(()=>'',e=>e.message)),/unresolved/);
+  await dashboard(b,7.5,1,8.5);
   await Promise.all([a,b].map(p=>p.locator('#spike-logout').click()));
-  assert.equal(await a.evaluate(()=>sessionStorage.getItem('bod-synthetic-pending-v1')),null);
   assert.deepEqual(errors,[]);
-  console.log('PASS: actual template/CSS/JS; two independent Chromium processes; gift/save/spend; push; reconnect/reload; scoped read/write/socket denial; held state/mutation/history and stale socket family/logout races.');
+  console.log('PASS: actual template/CSS/JS; two independent Chromium processes; driver-only gift/save/spend; read-only UI and HTTP; push; reconnect/reload; scoped read/socket denial; held state/history and stale socket family/logout races.');
  } finally {await Promise.all(browsers.map(x=>x.close()));}
 })().catch(e=>{console.error(e);process.exitCode=1;});
