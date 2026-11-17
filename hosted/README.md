@@ -102,8 +102,8 @@ idempotency insert; those particular fault points have not been proven in the
 Cloudflare runtime. Tests access no existing family DB.
 
 The separate JS RPC test runs two local Workers in one Wrangler process. A JS
-Worker directly invokes a Python `FamilyBank` subclass; the subclass adds only
-synthetic setup, echo, snapshots and fault injection and is never deployable. It checks
+Worker directly invokes a Python `FamilyBank` subclass; the subclass adds
+synthetic-only fixture controls and is never deployable. It checks
 both reads, all seven mutations including a funded allowance collection,
 JSON field/type preservation including a test-only JS-origin nested echo through
 the production output serializer, null, Unicode and a frozen exact timestamp;

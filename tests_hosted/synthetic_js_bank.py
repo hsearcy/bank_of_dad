@@ -32,10 +32,27 @@ class SyntheticJSBank(FamilyBank):
         return _rpc_result(value)
 
     async def fixture_snapshot(self):
-        tables = ('kids', 'bonds', 'transactions', 'history', 'settings', 'hosted_operations',
-                  'local_auth_schema', 'local_members', 'local_grants', 'local_operations')
-        return _rpc_result(self._authorization.bank._transaction(lambda c: {
-            t: c.execute('SELECT * FROM ' + t + ' ORDER BY rowid').fetchall() for t in tables}))
+        def snapshot(c):
+            schema = c.execute("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name").fetchall()
+            result = {'_schema': schema}
+            for item in schema:
+                if item['type'] == 'table':
+                    name = item['name']
+                    quoted = '"' + name.replace('"', '""') + '"'
+                    # Sort by serialized row rather than assuming every table has a rowid.
+                    rows = c.execute('SELECT * FROM ' + quoted).fetchall()
+                    result[name] = sorted(rows, key=lambda row: json.dumps(row, sort_keys=True))
+            return result
+        return _rpc_result(self._authorization.bank._transaction(snapshot))
+
+    async def fixture_probe_snapshot(self, target, delta):
+        # Disposable synthetic state only: demonstrate that snapshots see metadata
+        # changes which ordinary application rows would miss.
+        statements = {
+            'marker': 'UPDATE hosted_schema SET version=version+?',
+            'sequence': "UPDATE sqlite_sequence SET seq=seq+? WHERE name='kids'",
+        }
+        self._authorization.bank._transaction(lambda c: c.execute(statements[target], (delta,)).fetchall())
 
     async def fixture_seed_allowance(self):
         self._authorization.bank._transaction(lambda c: c.execute(

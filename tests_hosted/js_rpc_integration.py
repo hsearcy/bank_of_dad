@@ -51,6 +51,19 @@ def main():
                 def both_snapshots():
                     return (call('snapshot')['result'], call('snapshot', object='other')['result'])
                 isolated_before = both_snapshots()
+                for state in isolated_before:
+                    assert {'hosted_schema', 'sqlite_sequence', '_schema'} <= state.keys()
+                    assert any(entry['name'] == 'hosted_schema' for entry in state['_schema'])
+                # The other object has allocated a kid ID, so its sequence exists.
+                assert any(row['name'] == 'kids' for row in isolated_before[1]['sqlite_sequence'])
+                for target, table in [('marker', 'hosted_schema'), ('sequence', 'sqlite_sequence')]:
+                    call('probe_snapshot', [target, 1], object='other')
+                    changed = both_snapshots()
+                    assert changed[0] == isolated_before[0]
+                    assert changed[1][table] != isolated_before[1][table]
+                    assert changed != isolated_before
+                    call('probe_snapshot', [target, -1], object='other')
+                    assert both_snapshots() == isolated_before
                 for obj, family, wrong in [('other', other_family, token), ('synthetic', F, other['active'])]:
                     for method, args in [('read', [family, wrong, 'kids', []]),
                                          ('mutate', [family, wrong, 'cross', 'gift', [1, 10]])]:
@@ -58,8 +71,10 @@ def main():
                         assert both_snapshots() == isolated_before
                 # Also prove family and token cannot be routed together to the other object.
                 for obj, family, secret in [('other', F, token), ('synthetic', other_family, other['active'])]:
-                    assert call('read', [family, secret, 'kids', []], object=obj, status=400) == {'error': 'denied'}
-                    assert both_snapshots() == isolated_before
+                    for method, args in [('read', [family, secret, 'kids', []]),
+                                         ('mutate', [family, secret, 'cross-routed', 'gift', [1, 10]])]:
+                        assert call(method, args, object=obj, status=400) == {'error': 'denied'}
+                        assert both_snapshots() == isolated_before
                 def mutate(op, action, args):
                     return call('mutate', [F, token, op, action, args])['result']
                 def read(action, args):

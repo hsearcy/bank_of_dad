@@ -11,6 +11,7 @@ export default {
         case 'setup': result = await stub.fixture_setup(...(body.args || [])); break;
         case 'echo': result = await stub.fixture_echo(body.value); break;
         case 'snapshot': result = await stub.fixture_snapshot(); break;
+        case 'probe_snapshot': await stub.fixture_probe_snapshot(...body.args); result = null; break;
         case 'read': result = await stub.read(...body.args); break;
         case 'mutate': result = await stub.mutate(...body.args); break;
         case 'fault': result = await stub.fixture_fault(...body.args); break;
