@@ -25,9 +25,17 @@ export default {async fetch(request, env) {
         return Response.json(await env.BANK.get(env.BANK.idFromName(family)).fixture_snapshot());
       }
       if (u.pathname === '/__test/mutate') {
-        const {family,token,operation,action,args} = await request.json();
+        const {family,token,operation,action,args,dropNotification} = await request.json();
         if (!validFamily(family) || !token || !operation || !Array.isArray(args)) throw Error('test input');
-        return Response.json(await env.BANK.get(env.BANK.idFromName(family)).fixture_mutate(family,token,operation,action,args));
+        return Response.json(await env.BANK.get(env.BANK.idFromName(family)).fixture_mutate(family,token,operation,action,args,dropNotification === true));
+      }
+      if (['/__test/clock','/__test/revoke','/__test/short-grant'].includes(u.pathname)) {
+        const {family,token,seconds} = await request.json();
+        if (!validFamily(family) || !token) throw Error('test input');
+        const stub = env.BANK.get(env.BANK.idFromName(family));
+        if (u.pathname.endsWith('/clock')) return Response.json(await stub.fixture_clock(family,token,seconds));
+        if (u.pathname.endsWith('/short-grant')) return Response.json(await stub.fixture_short_grant(family,token));
+        return Response.json(await stub.fixture_revoke(family,token));
       }
       return new Response('unknown test control', {status:404});
     }

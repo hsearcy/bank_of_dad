@@ -58,7 +58,7 @@ async function refresh() {
     if (SYNTHETIC && context === SYNTHETIC.context() && serial !== syntheticRefresh) return false;
     throw error;
   }
-  if (SYNTHETIC && (context !== SYNTHETIC.context() || serial !== syntheticRefresh)) return false;
+  if (SYNTHETIC && (context !== SYNTHETIC.context() || serial !== syntheticRefresh || !SYNTHETIC.accept(state))) return false;
   STATE = state;
   SERVER_NOW = STATE.server_now || Date.now() / 1000;
   FETCH_AT = Date.now() / 1000;

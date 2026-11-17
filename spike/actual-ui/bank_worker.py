@@ -18,6 +18,7 @@ class SyntheticLiveBank(DurableObject):
         self._revision = RevisionFixture(self._authorization)
         self.sessions = {}
         self.serial = 0
+        self.clock_offset = 0
 
     async def fixture_setup(self, family):
         a = self._authorization
@@ -49,7 +50,25 @@ class SyntheticLiveBank(DurableObject):
             revision = self._revision._revision(c)
             return {'kids': a.bank._read(c, 'kids', []), 'config': cfg(c),
                     'server_now': bank.now_ts(c), 'revision': revision}
-        return _rpc_result(a.bank._transaction(read))
+        original = bank.now_ts
+        try:
+            bank.now_ts = lambda c: original(c) + self.clock_offset
+            return _rpc_result(a.bank._transaction(read))
+        finally:
+            bank.now_ts = original
+
+    async def fixture_clock(self, family, token, seconds):
+        self._revision.snapshot(family, token)
+        self.clock_offset = int(seconds)
+        return _rpc_result(True)
+
+    async def fixture_short_grant(self, family, token):
+        self._revision.snapshot(family, token)
+        return _rpc_result(self._authorization.issue_grant_privileged(family, OWNER, 4))
+
+    async def fixture_revoke(self, family, token):
+        self._authorization.revoke(family, token)
+        return _rpc_result(True)
 
     async def fixture_transactions(self, family, token, kid_id):
         a = self._authorization
@@ -93,11 +112,11 @@ class SyntheticLiveBank(DurableObject):
             try: ws.send(json.dumps({'type': 'invalidate', 'revision': revision}))
             except Exception: pass
 
-    async def fixture_mutate(self, family, token, operation_id, action, args):
+    async def fixture_mutate(self, family, token, operation_id, action, args, drop_notification=False):
         if action not in ('add_kid', 'gift', 'save', 'withdraw', 'spend', 'invest', 'collect_rewards'):
             raise ValueError('unsupported synthetic mutation')
         result, revision, changed = self._revision.mutate(family, token, operation_id, action, args)
-        if changed:
+        if changed and not drop_notification:
             self._notify(family, revision)
         return _rpc_result(result)
 

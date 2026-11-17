@@ -125,7 +125,7 @@ const crypto = require('node:crypto');
   assert.deepEqual(afterGift.schema,beforeAll[0].schema);
   assert.deepEqual(await snapshot(G),beforeAll[1]);
   await Promise.all([a,b].map(p=>dashboard(p,7,0,7)));
-  await quiet(); assert.deepEqual(frames,[['{"type":"invalidate"}'],['{"type":"invalidate"}']]);
+  await quiet(); assert.deepEqual(frames.map(xs=>xs.map(JSON.parse)),[[{type:'invalidate',revision:2}],[{type:'invalidate',revision:2}]]);
   await mutate(F,ta[1],'save',[1,100]);
   await Promise.all([a,b].map(p=>dashboard(p,6,1,7)));
   await quiet(); assert.equal(frames[0].length,2); assert.equal(frames[1].length,2);
@@ -195,7 +195,7 @@ const crypto = require('node:crypto');
   await a.locator('.tx-note').filter({hasText:'driver spend'}).waitFor();
   assert.equal(await a.locator('.tx-row').count(),3);
   await a.locator('#modal .close').click();
-  await connect(b,F,ta[1]); await dashboard(b,5.5,1,6.5);
+  await b.waitForFunction(()=>document.querySelector('#spike-status').textContent==='connected'); await dashboard(b,5.5,1,6.5);
   await b.reload(); await connect(b,F,ta[1]); await dashboard(b,5.5,1,6.5);
   const denied=await a.request.get(process.env.BASE_URL+'/api/state',{headers:{'x-spike-family':G,'x-spike-token':ta[0]}}); assert.equal(denied.status(),403);
   const deniedDriver=await fetch(process.env.DRIVER_URL+'/__test/mutate',{method:'POST',headers:{'content-type':'application/json','x-test-secret':process.env.TEST_SECRET},body:JSON.stringify({family:G,token:ta[0],operation:crypto.randomUUID(),action:'gift',args:[1,900,'wrong']})}); assert.equal(deniedDriver.status,403);
@@ -247,6 +247,57 @@ const crypto = require('node:crypto');
   await b.evaluate(()=>{Object.defineProperty(document,'visibilityState',{configurable:true,value:'visible'}); document.dispatchEvent(new Event('visibilitychange'));});
   await dashboard(b,7.5,1,8.5);
   await Promise.all([a,b].map(p=>p.locator('#spike-logout').click()));
+  // Accelerate only the synthetic reconciliation timer, not the regular app poll.
+  await b.addInitScript(() => {window.__BOD_SYNTHETIC_SAFETY_MS__=3000;});
+  await b.reload(); await connect(b,F,ta[1]);
+  const beforeLoss = frames[1].length;
+  await control('mutate',{family:F,token:ta[0],operation:crypto.randomUUID(),action:'gift',args:[1,50,'lost notification'],dropNotification:true});
+  await dashboard(b,8,1,9);
+  assert.equal(frames[1].length,beforeLoss, 'postcommit notification was suppressed');
+  // Hold a real old-revision snapshot while a real committed mutation and its
+  // push install a newer snapshot; releasing the old one must not roll back.
+  let releaseRevision, revisionSeen;
+  const revisionGate=new Promise(r=>releaseRevision=r), gotRevision=new Promise(r=>revisionSeen=r);
+  await b.route('**/api/state',async route=>{const response=await route.fetch(); revisionSeen(); await revisionGate; await route.fulfill({response});},{times:1});
+  await b.evaluate(()=>{window.heldRevision=refresh();}); await gotRevision;
+  await mutate(F,ta[0],'gift',[1,25,'revision ordering']);
+  await dashboard(b,8.25,1,9.25);
+  releaseRevision(); assert.equal(await b.evaluate(()=>heldRevision),false);
+  await dashboard(b,8.25,1,9.25);
+  // Real time-derived interest changes while durable revision stays equal.
+  const earlier = await state(b);
+  await control('clock',{family:F,token:ta[0],seconds:7*86400});
+  await b.evaluate(()=>refresh());
+  const later=await b.evaluate(()=>STATE);
+  assert.equal(later.revision,earlier.revision);
+  assert.ok(later.kids[0].pending_interest_cents > earlier.kids[0].pending_interest_cents);
+  // Older/lower and duplicate invalidations must not trigger snapshot requests.
+  let requests=0; const count=req=>{if(req.url().endsWith('/api/state')) requests++;}; b.on('request',count);
+  await b.evaluate(rev=>{const w=sockets.findLast(s=>s.readyState===WebSocket.OPEN && s.onmessage); for(const n of [rev,rev-1,rev, -1]) w.onmessage({data:JSON.stringify({type:'invalidate',revision:n})});},later.revision);
+  await quiet(); assert.equal(requests,0); b.off('request',count);
+  // A newer request returning an older revision cannot roll the dashboard back.
+  await b.route('**/api/state',async route=>{const r=await route.fetch(); const body=await r.json(); body.revision--; body.kids[0].wallet_cents=1; await route.fulfill({json:body});},{times:1});
+  assert.equal(await b.evaluate(()=>refresh()),false);
+  assert.equal(await b.evaluate(()=>STATE.kids[0].wallet_cents),825);
+  // Intentional offline state cancels retries until online resumes.
+  await b.evaluate(()=>{Object.defineProperty(navigator,'onLine',{configurable:true,value:false}); window.dispatchEvent(new Event('offline'));});
+  assert.equal(await b.locator('#spike-status').textContent(),'offline');
+  const offlineCount=await b.evaluate(()=>sockets.length); await new Promise(r=>setTimeout(r,1100));
+  assert.equal(await b.evaluate(()=>sockets.length),offlineCount);
+  await b.evaluate(()=>{Object.defineProperty(navigator,'onLine',{configurable:true,value:true}); window.dispatchEvent(new Event('online'));});
+  await b.waitForFunction(()=>document.querySelector('#spike-status').textContent==='connected');
+  // Revocation makes the next reconciliation fail closed and stops retries.
+  await control('revoke',{family:F,token:ta[1]});
+  await b.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
+  await b.waitForFunction(()=>document.querySelector('#spike-status').textContent==='access denied');
+  assert.equal(await b.locator('#kids').textContent(),'');
+  const closedCount=await b.evaluate(()=>sockets.length); await new Promise(r=>setTimeout(r,1200));
+  assert.equal(await b.evaluate(()=>sockets.length),closedCount);
+  // A real expiring grant is denied by the DO and reconciliation clears the UI.
+  const short=await control('short-grant',{family:F,token:ta[0]});
+  await connect(b,F,short);
+  await b.waitForFunction(()=>document.querySelector('#spike-status').textContent==='access denied',null,{timeout:10000});
+  assert.equal(await b.locator('#kids').textContent(),'');
   assert.deepEqual(errors,[]);
   console.log('PASS: actual template/CSS/JS; two independent Chromium processes; driver-only gift/save/spend; read-only UI and HTTP; push; reconnect/reload; scoped read/socket denial; held state/history and stale socket family/logout races.');
  } finally {await Promise.all(browsers.map(x=>x.close()));}

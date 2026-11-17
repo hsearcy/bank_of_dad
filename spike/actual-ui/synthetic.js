@@ -1,6 +1,10 @@
 /* Unsafe fake session controls, exclusively served by the local spike. */
 (() => {
-  let hooks, scope = null, epoch = 0, socket = null;
+  let hooks, scope = null, epoch = 0, socket = null, revision = -1;
+  let retryTimer = null, safetyTimer = null, attempts = 0;
+  // Test harness may accelerate this synthetic-only safety net.
+  const safetyMs = Number(window.__BOD_SYNTHETIC_SAFETY_MS__) || 60000;
+  const clearTimers = () => {clearTimeout(retryTimer); clearInterval(safetyTimer); retryTimer = safetyTimer = null;};
   const ui = document.createElement('aside');
   ui.style.cssText = 'position:fixed;bottom:0;right:0;z-index:200;background:white;max-width:440px;border:2px solid black;padding:4px';
   ui.innerHTML = `<b>READ-ONLY SYNTHETIC ONLY — fake grants, no real authentication</b>
@@ -15,6 +19,7 @@
   const status = value => {el('status').textContent = value;};
   function disconnect(clear = true) {
     epoch++;
+    clearTimers(); attempts = 0; revision = -1;
     scope = null;
     const old = socket; socket = null;
     if (old) {old.onmessage = old.onopen = old.onclose = old.onerror = null; old.close();}
@@ -36,6 +41,11 @@
       throw Error('Synthetic request failed.');
     }
     if (g !== epoch || scope !== s) throw stale();
+    if (response.status === 401 || response.status === 403) {
+      const e = Error('Synthetic access denied'); e.denied = true;
+      if (!path.startsWith('/api/state')) {disconnect(); status('access denied');}
+      throw e;
+    }
     if (!response.ok || !result || typeof result !== 'object' || Array.isArray(result)) throw Error('Synthetic request failed or unsupported.');
     return result;
   }
@@ -44,29 +54,75 @@
     try {
       const applied = (await hooks.refresh()) !== false;
       if (applied && g === epoch && ws === socket && ws?.readyState === WebSocket.OPEN) {
+        attempts = 0;
         status('connected');
       }
       return applied;
-    } catch (e) {if (e.name !== 'AbortError' && g === epoch) status('snapshot failed'); return false;}
+    } catch (e) {
+      if (e.name !== 'AbortError' && g === epoch) {
+        if (e.denied) {disconnect(); status('access denied');}
+        else status('snapshot failed');
+      }
+      return false;
+    }
   };
-  async function connect(family, token) {
-    disconnect(false);
-    el('token').value = token;
-    const g = epoch;
-    scope = {family, token};
+  function schedule() {
+    if (!scope || retryTimer || !navigator.onLine) return;
+    const g = epoch, delay = Math.min(30000, 500 * 2 ** Math.min(attempts++, 6));
+    retryTimer = setTimeout(async () => {
+      retryTimer = null;
+      if (g !== epoch || !scope) return;
+      // A denied read is terminal even when the socket handshake cannot report why.
+      try {await request('/api/state');}
+      catch (e) {
+        if (g !== epoch) return;
+        if (e.denied) {disconnect(); status('access denied'); return;}
+      }
+      if (g === epoch && scope && navigator.onLine) openSocket();
+    }, delay);
+  }
+  function openSocket() {
+    if (!scope || socket || !navigator.onLine) return;
+    const g = epoch, {family, token} = scope;
     const ws = new WebSocket(`ws://${location.host}/__spike/socket?family=${encodeURIComponent(family)}&token=${encodeURIComponent(token)}`);
     socket = ws;
     const current = () => g === epoch && socket === ws;
-    ws.onmessage = e => {if (current() && e.data === '{"type":"invalidate"}') reload();};
+    ws.onmessage = e => {
+      if (!current()) return;
+      let frame; try {frame = JSON.parse(e.data);} catch (_) {return;}
+      if (frame?.type === 'invalidate' && Number.isSafeInteger(frame.revision) && frame.revision >= 0 && frame.revision > revision) reload();
+    };
     ws.onopen = () => {if (current()) reload();};
-    ws.onclose = ws.onerror = () => {if (current()) disconnect(false);};
+    ws.onclose = ws.onerror = () => {
+      if (!current()) return;
+      socket = null; ws.onmessage = ws.onopen = ws.onclose = ws.onerror = null; ws.close();
+      hooks?.clear(); status(navigator.onLine ? 'reconnecting' : 'offline'); schedule();
+    };
+  }
+  async function connect(family, token) {
+    disconnect(false);
+    el('token').value = token;
+    scope = {family, token};
+    safetyTimer = setInterval(() => {if (scope && navigator.onLine && socket?.readyState === WebSocket.OPEN) reload();}, Math.max(250, safetyMs));
+    openSocket();
   }
   window.__BOD_SYNTHETIC_SPIKE__ = {enabled:true, request, context:()=>epoch,
+    accept(state) {
+      if (!Number.isSafeInteger(state.revision) || state.revision < 0 || state.revision < revision) return false;
+      revision = state.revision; return true;
+    },
     attach(value) {hooks = value;}, connect, disconnect};
   el('connect').onclick = () => connect(el('family').value, el('token').value);
   el('logout').onclick = () => disconnect();
   el('family').onchange = () => disconnect();
-  document.addEventListener('visibilitychange', () => {if (scope && document.visibilityState === 'visible') reload();});
-  // The actual UI has uncaught async handlers; surface fixture errors without a false success.
-  window.addEventListener('unhandledrejection', e => {if (e.reason?.name !== 'AbortError') status(e.reason?.message || 'Synthetic request failed.'); e.preventDefault();});
+  document.addEventListener('visibilitychange', () => {if (scope && document.visibilityState === 'visible' && navigator.onLine) {if (socket?.readyState === WebSocket.OPEN) reload(); else schedule();}});
+  window.addEventListener('offline', () => {
+    clearTimeout(retryTimer); retryTimer = null;
+    if (socket) {const old = socket; socket = null; old.onmessage = old.onopen = old.onclose = old.onerror = null; old.close();}
+    if (scope) {hooks?.clear(); status('offline');}
+  });
+  window.addEventListener('online', () => {if (scope) schedule();});
+  // Fixture event handlers may reject after their context has changed. Never let
+  // a global rejection callback overwrite the current session's status.
+  window.addEventListener('unhandledrejection', e => {e.preventDefault();});
 })();
