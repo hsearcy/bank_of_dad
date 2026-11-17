@@ -51,16 +51,34 @@ def main():
                 def both_snapshots():
                     return (call('snapshot')['result'], call('snapshot', object='other')['result'])
                 isolated_before = both_snapshots()
+                try:
+                    call('schema_collision', ['table'], object='other')
+                    table_snapshot = both_snapshots()
+                    assert table_snapshot[1]['tables']['_schema'] == []
+                    assert any(entry['name'] == '_schema' and entry['type'] == 'table'
+                               for entry in table_snapshot[1]['schema'])
+                    call('schema_collision', ['index'], object='other')
+                    indexed_snapshot = both_snapshots()
+                    assert indexed_snapshot[0] == table_snapshot[0]
+                    assert indexed_snapshot[1] != table_snapshot[1], 'index missing from snapshot when user table is named _schema'
+                    assert indexed_snapshot[1]['tables'] == table_snapshot[1]['tables']
+                    assert any(entry['name'] == 'fixture_schema_index' and entry['type'] == 'index'
+                               for entry in indexed_snapshot[1]['schema'])
+                    assert both_snapshots() == indexed_snapshot
+                finally:
+                    call('schema_collision', ['cleanup'], object='other')
+                assert both_snapshots() == isolated_before
                 for state in isolated_before:
-                    assert {'hosted_schema', 'sqlite_sequence', '_schema'} <= state.keys()
-                    assert any(entry['name'] == 'hosted_schema' for entry in state['_schema'])
+                    assert set(state) == {'schema', 'tables'}
+                    assert {'hosted_schema', 'sqlite_sequence'} <= state['tables'].keys()
+                    assert any(entry['name'] == 'hosted_schema' for entry in state['schema'])
                 # The other object has allocated a kid ID, so its sequence exists.
-                assert any(row['name'] == 'kids' for row in isolated_before[1]['sqlite_sequence'])
+                assert any(row['name'] == 'kids' for row in isolated_before[1]['tables']['sqlite_sequence'])
                 for target, table in [('marker', 'hosted_schema'), ('sequence', 'sqlite_sequence')]:
                     call('probe_snapshot', [target, 1], object='other')
                     changed = both_snapshots()
                     assert changed[0] == isolated_before[0]
-                    assert changed[1][table] != isolated_before[1][table]
+                    assert changed[1]['tables'][table] != isolated_before[1]['tables'][table]
                     assert changed != isolated_before
                     call('probe_snapshot', [target, -1], object='other')
                     assert both_snapshots() == isolated_before
@@ -110,12 +128,12 @@ def main():
                     (6, 'allowance', 300, 'Allowance'), (5, 'invest', 4, 'Invested (1 Month lock)'), (4, 'spend', -1, '🛒'),
                     (3, 'withdraw', 1, 'Savings to wallet'), (2, 'save', 10, 'Moved to savings'),
                     (1, 'gift', 100, 'hello 🦊')]
-                source = {r['id']: r for r in before['transactions']}
+                source = {r['id']: r for r in before['tables']['transactions']}
                 for row in rows:
                     assert set(row) == {'id', 'ts', 'kind', 'amount_cents', 'note'}
                     assert type(row['id']) is int and type(row['amount_cents']) is int
                     assert type(row['ts']) in (int, float) and row['ts'] == source[row['id']]['ts']
-                assert before['transactions'][0]['bond_id'] is None
+                assert before['tables']['transactions'][0]['bond_id'] is None
                 populated = read('kids', [])[0]
                 for secret in tokens.values():
                     assert secret not in json.dumps(populated, ensure_ascii=False)
@@ -123,14 +141,14 @@ def main():
                 assert 'synthetic-owner' not in json.dumps(populated, ensure_ascii=False)
                 assert populated['wallet_cents'] == 886 and populated['savings_cents'] == 9
                 assert len(populated['bonds']) == 1 and len(populated['history']) == 6
-                bond = populated['bonds'][0]; source_bond = before['bonds'][0]
+                bond = populated['bonds'][0]; source_bond = before['tables']['bonds'][0]
                 assert set(bond) == {'id', 'term', 'emoji', 'principal_cents', 'payout_cents', 'buy_ts', 'mature_ts', 'days_left', 'ready'}
                 assert (bond['id'], bond['term'], bond['principal_cents'], bond['payout_cents'], bond['ready']) == (1, '1 Month', 4, 5, False)
                 assert type(bond['ready']) is bool and type(bond['days_left']) is int
                 assert bond['buy_ts'] == source_bond['buy_ts'] and bond['mature_ts'] == source_bond['mature_ts']
                 expected_history = [{'ts': h['ts'], 'v': h['networth_cents'], 'wallet': h['wallet_cents'],
                                      'savings': h['savings_cents'], 'invest': h['invest_cents']}
-                                    for h in before['history']]
+                                    for h in before['tables']['history']]
                 assert populated['history'] == sorted(expected_history, key=lambda h: h['ts'])
                 for history in populated['history']:
                     assert all(type(history[k]) is int for k in ('v', 'wallet', 'savings', 'invest'))
@@ -172,10 +190,10 @@ def main():
                     assert list(pool.map(parallel_gift, ['same'] * 8)) == [True] * 8
                     assert list(pool.map(parallel_gift, ['parallel-' + str(i) for i in range(8)])) == [True] * 8
                 final = snap()
-                assert final['kids'][0]['wallet_cents'] == after['kids'][0]['wallet_cents'] + 9
-                assert len(final['transactions']) == len(after['transactions']) + 9
-                assert len(final['hosted_operations']) == len(after['hosted_operations']) + 9
-                assert len(final['local_operations']) == len(after['local_operations']) + 9
+                assert final['tables']['kids'][0]['wallet_cents'] == after['tables']['kids'][0]['wallet_cents'] + 9
+                assert len(final['tables']['transactions']) == len(after['tables']['transactions']) + 9
+                assert len(final['tables']['hosted_operations']) == len(after['tables']['hosted_operations']) + 9
+                assert len(final['tables']['local_operations']) == len(after['tables']['local_operations']) + 9
                 call('disable_allowance')
                 disabled = read('kids', [])[0]
                 assert disabled['allowance_enabled'] is False and disabled['next_allowance_ts'] is None

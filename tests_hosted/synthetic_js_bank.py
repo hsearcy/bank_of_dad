@@ -34,14 +34,14 @@ class SyntheticJSBank(FamilyBank):
     async def fixture_snapshot(self):
         def snapshot(c):
             schema = c.execute("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name").fetchall()
-            result = {'_schema': schema}
+            result = {'schema': schema, 'tables': {}}
             for item in schema:
                 if item['type'] == 'table':
                     name = item['name']
                     quoted = '"' + name.replace('"', '""') + '"'
                     # Sort by serialized row rather than assuming every table has a rowid.
                     rows = c.execute('SELECT * FROM ' + quoted).fetchall()
-                    result[name] = sorted(rows, key=lambda row: json.dumps(row, sort_keys=True))
+                    result['tables'][name] = sorted(rows, key=lambda row: json.dumps(row, sort_keys=True))
             return result
         return _rpc_result(self._authorization.bank._transaction(snapshot))
 
@@ -53,6 +53,14 @@ class SyntheticJSBank(FamilyBank):
             'sequence': "UPDATE sqlite_sequence SET seq=seq+? WHERE name='kids'",
         }
         self._authorization.bank._transaction(lambda c: c.execute(statements[target], (delta,)).fetchall())
+
+    async def fixture_schema_collision(self, action):
+        statements = {
+            'table': 'CREATE TABLE "_schema" (value TEXT)',
+            'index': 'CREATE INDEX fixture_schema_index ON "_schema" (value)',
+            'cleanup': 'DROP TABLE IF EXISTS "_schema"',
+        }
+        self._authorization.bank._transaction(lambda c: c.execute(statements[action]).fetchall())
 
     async def fixture_seed_allowance(self):
         self._authorization.bank._transaction(lambda c: c.execute(
