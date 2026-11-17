@@ -249,12 +249,14 @@ class Hosted:
             return customer.id
         return family['customer']
 
-    def reconcile(self, conn, customer):
+    def reconcile(self, conn, customer, subscriptions=None):
         # Caller holds SQLite's writer lock across the bounded API read and write.
         # No concurrent webhook/refresh can overwrite a newer snapshot with an older fetch.
         until = 0
-        subscriptions = self.stripe.v1.subscriptions.list({'customer': customer, 'status': 'all', 'limit': 100})
-        for sub in subscriptions.auto_paging_iter():
+        if subscriptions is None:
+            subscriptions = self.stripe.v1.subscriptions.list(
+                {'customer': customer, 'status': 'all', 'limit': 100}).auto_paging_iter()
+        for sub in subscriptions:
             sub = sub.to_dict()
             if sub['status'] != 'active' or sub['livemode'] != self.live:
                 continue
@@ -281,8 +283,18 @@ class Hosted:
             # Customer association is durable before Checkout can emit any webhook.
             with self.connect() as conn:
                 conn.execute('BEGIN IMMEDIATE')
-                if self.reconcile(conn, customer) > time.time():
+                subscriptions = list(self.stripe.v1.subscriptions.list(
+                    {'customer': customer, 'status': 'all', 'limit': 100}).auto_paging_iter())
+                if self.reconcile(conn, customer, subscriptions) > time.time():
                     return redirect('/billing')
+                # Checkout expiry is not subscription expiry: past_due/unpaid
+                # subscriptions can keep retrying payment long after Checkout.
+                # Use the same current snapshot, including all pages, fail closed
+                # for unknown statuses and recover existing billing in the portal.
+                if any(sub.status not in ('canceled', 'incomplete_expired') for sub in subscriptions):
+                    portal = self.stripe.v1.billing_portal.sessions.create({
+                        'customer': customer, 'return_url': self.origin + '/billing'})
+                    return redirect(portal.url, code=303)
                 family = conn.execute('SELECT * FROM families WHERE customer=?', (customer,)).fetchone()
                 if family['checkout_expires'] and family['checkout_expires'] > time.time() + 60:
                     existing = self.stripe.v1.checkout.sessions.retrieve(family['checkout_id'])
@@ -291,7 +303,9 @@ class Hosted:
                     if existing.status == 'complete':
                         prior = self.stripe.v1.subscriptions.retrieve(existing.subscription)
                         if prior.status not in ('canceled', 'incomplete_expired'):
-                            return redirect('/billing')  # Payment processing/failure: use the portal.
+                            portal = self.stripe.v1.billing_portal.sessions.create({
+                                'customer': customer, 'return_url': self.origin + '/billing'})
+                            return redirect(portal.url, code=303)
                 # Stable per time window for retry after an uncertain API response.
                 window = int(time.time() // 1800)
                 checkout = self.stripe.v1.checkout.sessions.create({

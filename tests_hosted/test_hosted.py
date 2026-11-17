@@ -425,7 +425,7 @@ def test_period_cancellation_session_expiry_and_resubscribe(hosted_app):
     login(a, state, origin)
     post(a, '/billing/checkout', origin)
     state['checkout_status'] = 'complete'
-    assert post(a, '/billing/checkout', origin).location == '/billing'
+    assert post(a, '/billing/checkout', origin).location == 'https://billing.stripe.com/synthetic'
     assert len(state['checkouts']) == 1  # Do not double-charge pending payments.
     state['prior_status'] = 'canceled'
     assert post(a, '/billing/checkout', origin).status_code == 303
