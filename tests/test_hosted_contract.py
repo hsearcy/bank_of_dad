@@ -26,15 +26,16 @@ class HostedContractTests(unittest.TestCase):
         db.init_db(seed=False)
         self.conn = db.get_conn()
         self.addCleanup(self.conn.close)
-        self.clock = patch("bank.time.time", return_value=T0)
+        self.clock = patch("bank.time")
         self.mock_time = self.clock.start()
         self.addCleanup(self.clock.stop)
+        self.mock_time.time.return_value = T0
         bank.add_kid(self.conn, "Alex")
         bank.add_kid(self.conn, "Jordan")
         self.a, self.b = [r[0] for r in self.conn.execute("SELECT id FROM kids ORDER BY id")]
 
     def at(self, days):
-        self.mock_time.return_value = T0 + days * DAY
+        self.mock_time.time.return_value = T0 + days * DAY
 
     def kid(self, kid_id=None):
         return self.conn.execute("SELECT * FROM kids WHERE id=?", (kid_id or self.a,)).fetchone()
@@ -191,13 +192,27 @@ class HostedContractTests(unittest.TestCase):
 
     def test_api_exact_json_for_collect_and_transactions(self):
         import app
-        app.app.config["TESTING"] = True
+        self.enterContext(patch.dict(app.app.config, {"TESTING": True}))
         client = app.app.test_client()
         response = client.post("/api/collect", json={"kid_id": self.a, "kind": "interest"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), {"ok": True, "collected_cents": 0})
         response = client.get(f"/api/transactions?kid_id={self.a}")
+        self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), {"server_now": T0, "transactions": []})
+
+        bank.set_allowance(self.conn, self.a, 125, 7)
+        self.at(14)
+        response = client.post("/api/collect", json={"kid_id": self.a, "kind": "allowance"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"ok": True, "collected_cents": 250})
+        response = client.get(f"/api/transactions?kid_id={self.a}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {
+            "server_now": T0 + 14 * DAY,
+            "transactions": [{"id": 1, "ts": T0 + 14 * DAY, "kind": "allowance",
+                              "amount_cents": 250, "note": "Allowance"}],
+        })
 
 
 if __name__ == "__main__":
