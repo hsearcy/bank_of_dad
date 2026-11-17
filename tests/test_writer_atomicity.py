@@ -230,7 +230,7 @@ c.close()
         self.assertFalse(bank.set_dad_pin(self.conn, 'bad')[0])
         self.assertEqual(list(self.conn.iterdump()), before)
 
-    def test_shared_connection_rejects_overlap_and_allows_reentrancy(self):
+    def test_shared_connection_rejects_cross_thread_overlap(self):
         entered, release = threading.Event(), threading.Event()
         errors = []
         conn = self.connect(check_same_thread=False)
@@ -262,21 +262,70 @@ c.close()
         self.assertEqual(errors, [])
         self.assertTrue(bank.gift(conn, self.kid, 100))
         self.assertEqual(self.state(), (900, 200))
+        conn.close()
+
+    def test_trace_reentrant_gift_rejected_even_when_sqlite_suppresses_error(self):
+        for capture in (False, True):
+            with self.subTest(capture=capture):
+                self.conn.execute('DELETE FROM transactions')
+                self.conn.execute('DELETE FROM history')
+                self.conn.execute('UPDATE kids SET wallet_cents=1000, savings_cents=0')
+                self.conn.commit()
+                attempts, results, errors = [], [], []
+
+                def trace(sql):
+                    if sql.startswith('UPDATE kids SET wallet_cents=') and not attempts:
+                        attempts.append(sql)
+                        if capture:
+                            try:
+                                results.append(bank.gift(self.conn, self.kid, 100))
+                            except RuntimeError as exc:
+                                errors.append(str(exc))
+                        else:
+                            results.append(bank.gift(self.conn, self.kid, 100))
+
+                self.conn.set_trace_callback(trace)
+                try:
+                    self.assertTrue(bank.move_to_savings(self.conn, self.kid, 200)[0])
+                finally:
+                    self.conn.set_trace_callback(None)
+                self.assertEqual(len(attempts), 1)
+                self.assertEqual(results, [])
+                if capture:
+                    self.assertEqual(len(errors), 1)
+                    self.assertIn('same connection', errors[0])
+                self.assertEqual(self.state(), (800, 200))
+                self.assertEqual([tuple(r) for r in self.conn.execute(
+                    'SELECT kind, amount_cents FROM transactions ORDER BY id')], [('save', 200)])
+                self.assertEqual([tuple(r) for r in self.conn.execute(
+                    'SELECT wallet_cents, savings_cents FROM history ORDER BY id')], [(800, 200)])
+                self.assertTrue(bank.gift(self.conn, self.kid, 100))
+                self.assertEqual(self.state(), (900, 200))
+
+    def test_sequential_actions_in_caller_transaction(self):
+        for finish in ('rollback', 'commit'):
+            with self.subTest(finish=finish):
+                before = self.state()
+                self.conn.execute('BEGIN')
+                self.assertTrue(bank.move_to_savings(self.conn, self.kid, 200)[0])
+                self.assertTrue(bank.gift(self.conn, self.kid, 100))
+                self.assertTrue(self.conn.in_transaction)
+                self.assertEqual(self.state(), (before[0] - 100, before[1] + 200))
+                with closing(self.connect()) as observer:
+                    self.assertEqual(tuple(observer.execute('SELECT wallet_cents, savings_cents FROM kids').fetchone()), before)
+                getattr(self.conn, finish)()
+                self.assertEqual(self.state(), before if finish == 'rollback' else (before[0] - 100, before[1] + 200))
+
+    def test_direct_reentry_failure_rolls_back_and_cleans_guard(self):
+        before = list(self.conn.iterdump())
         @bank._serialized_accrual_action
         def composed(c):
-            bank.fast_forward(c, 1)
+            db.set_setting(c, 'temporary', 'value')
             return bank.gift(c, self.kid, 10)
-        self.assertTrue(composed(conn))
-        before = list(conn.iterdump())
-        @bank._serialized_accrual_action
-        def failing_composition(c):
-            bank.fast_forward(c, 1)
-            bank.gift(c, self.kid, 10)
-            raise RuntimeError('after nested writes')
-        with self.assertRaisesRegex(RuntimeError, 'after nested writes'):
-            failing_composition(conn)
-        self.assertEqual(list(conn.iterdump()), before)
-        conn.close()
+        with self.assertRaisesRegex(RuntimeError, 'same connection'):
+            composed(self.conn)
+        self.assertEqual(list(self.conn.iterdump()), before)
+        self.assertTrue(bank.gift(self.conn, self.kid, 10))
 
     def test_fast_forward_locks_before_read_with_deterministic_contention(self):
         entered, release = threading.Event(), threading.Event()
