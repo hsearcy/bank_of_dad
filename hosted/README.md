@@ -84,6 +84,7 @@ python3 -m venv .venv
 .venv/bin/python -m unittest discover -s tests_hosted -p 'test_foundation.py' -v
 (cd tests_hosted && npm ci --ignore-scripts)
 TMPDIR="${TMPDIR:-/tmp}" .venv/bin/python tests_hosted/integration.py
+TMPDIR="${TMPDIR:-/tmp}" .venv/bin/python tests_hosted/js_rpc_integration.py
 TMPDIR="${TMPDIR:-/tmp}" .venv/bin/python -m unittest discover -s tests -v
 ```
 
@@ -99,6 +100,20 @@ after inner commits. The fake
 SQLite DO unit tests also exercise migration interruption and rollback after the
 idempotency insert; those particular fault points have not been proven in the
 Cloudflare runtime. Tests access no existing family DB.
+
+The separate JS RPC test runs two local Workers in one Wrangler process. A JS
+Worker directly invokes a Python `FamilyBank` subclass; the subclass adds only
+synthetic setup, snapshots and fault injection and is never deployable. It checks
+both reads, all seven mutations including a funded allowance collection,
+JSON field/type preservation including nested values, null and Unicode, denials,
+hidden methods, rollback/retry, and concurrent same/different operation IDs.
+Before explicit JSON conversion, JS saw Python dictionaries as empty objects;
+`to_js` alone also made Python `None` into JS `undefined`, dropping null fields.
+The production class now returns plain JSON values. This test uses disposable local
+storage only. Its loopback JS dispatcher categorizes exceptions without returning
+messages, secrets or stacks; it is test-only, not a secure gateway. Raw RPC errors
+can contain Python details, so a future real gateway must sanitize them itself.
+There is still no real login, trusted bootstrap or deployed service.
 
 ## Before any real use
 
