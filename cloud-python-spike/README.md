@@ -25,8 +25,11 @@ its worker directory. They are never maintained as spike copies. The SQLite
 oracle imports those same root modules directly. A fresh temporary directory
 under `TMPDIR` contains all state, logs, and staged source; Wrangler's `HOME`,
 `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `TMPDIR` and `WRANGLER_LOG_PATH` are forced
-inside it regardless of inherited values. It is deleted on
-normal completion. This Linux harness starts each Wrangler in its own process
+inside it regardless of inherited values. The temporary directory and its log
+files are deleted during cleanup on success or failure; they are not retained
+for post-run inspection. Bind-collision diagnostics are emitted to stderr, and
+startup failures include the captured output in the raised exception; retain the
+console output if needed. This Linux harness starts each Wrangler in its own process
 session and waits for all non-zombie process-group members to exit before a
 restart or cleanup, escalating to SIGKILL only for that group. Ctrl-C also runs
 cleanup; SIGKILL or host failure cannot guarantee cleanup. It chooses a fresh

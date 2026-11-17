@@ -68,12 +68,18 @@ class HarnessTests(unittest.TestCase):
 
     def test_unrelated_collision_text_does_not_mask_real_error(self):
         fake = self.base / 'fake.py'
-        fake.write_text("import sys\np = sys.argv[sys.argv.index('--port') + 1]\nprint(f'✘ [ERROR] Address already in use (127.0.0.1:{p}). Please check that you are not already running a server on this address or specify a different port with --port.')\nprint('✘ [ERROR] genuine unrelated failure')\nsys.exit(7)\n")
+        fake.write_text("import sys\np = sys.argv[sys.argv.index('--port') + 1]\nprint(f'✘ [ERROR] Address already in use (127.0.0.1:{p}). Please check that you are not already running a server on this address or specify a different port with --port.')\nprint('✘ [ERROR] genuine unrelated failure')\nsys.exit(1)\n")
+        choose_port = mock.Mock(return_value=12345)
         with (self.base / 'run.log').open('w+') as log:
-            with self.assertRaisesRegex(RuntimeError, 'genuine unrelated failure') as failure:
-                harness.start_wrangler(self.src, self.base, log, self.env,
-                    command=[sys.executable, str(fake)])
-        self.assertIn('status 7', str(failure.exception))
+            with mock.patch.object(harness, 'is_bind_failure', wraps=harness.is_bind_failure) as classifier:
+                with self.assertRaisesRegex(RuntimeError, 'genuine unrelated failure') as failure:
+                    harness.start_wrangler(self.src, self.base, log, self.env,
+                        choose_port=choose_port, command=[sys.executable, str(fake)])
+        self.assertIn('status 1', str(failure.exception))
+        choose_port.assert_called_once_with()
+        classifier.assert_called_once()
+        self.assertEqual(classifier.call_args.args[1], 12345)
+        self.assertIn('genuine unrelated failure', classifier.call_args.args[0])
         self.assertEqual((self.base / 'run.log').read_text().count('genuine unrelated failure'), 1)
 
     def test_readme_parallel_example_propagates_failure_and_waits(self):
