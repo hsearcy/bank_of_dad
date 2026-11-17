@@ -1,10 +1,10 @@
 /* Unsafe fake session controls, exclusively served by the local spike. */
 (() => {
   let hooks, scope = null, epoch = 0, socket = null, revision = -1;
-  let retryTimer = null, safetyTimer = null, attempts = 0;
+  let retryTimer = null, safetyTimer = null, attempts = 0, acceptedSerial = 0, preflight = null;
   // Test harness may accelerate this synthetic-only safety net.
   const safetyMs = Number(window.__BOD_SYNTHETIC_SAFETY_MS__) || 60000;
-  const clearTimers = () => {clearTimeout(retryTimer); clearInterval(safetyTimer); retryTimer = safetyTimer = null;};
+  const clearTimers = () => {clearTimeout(retryTimer); clearInterval(safetyTimer); retryTimer = safetyTimer = null; preflight?.abort(); preflight = null;};
   const ui = document.createElement('aside');
   ui.style.cssText = 'position:fixed;bottom:0;right:0;z-index:200;background:white;max-width:440px;border:2px solid black;padding:4px';
   ui.innerHTML = `<b>READ-ONLY SYNTHETIC ONLY — fake grants, no real authentication</b>
@@ -19,7 +19,7 @@
   const status = value => {el('status').textContent = value;};
   function disconnect(clear = true) {
     epoch++;
-    clearTimers(); attempts = 0; revision = -1;
+    clearTimers(); attempts = 0; revision = -1; acceptedSerial = 0;
     scope = null;
     const old = socket; socket = null;
     if (old) {old.onmessage = old.onopen = old.onclose = old.onerror = null; old.close();}
@@ -28,14 +28,13 @@
     status('disconnected');
   }
   const stale = () => new DOMException('Synthetic context changed', 'AbortError');
-  async function request(path, body) {
+  async function request(path, body, signal) {
     const g = epoch, s = scope;
     if (!s) throw stale();
     if (body !== undefined) throw Error('Read-only synthetic dashboard');
     let response, result;
     try {
-      response = await fetch(path, {method:'GET', cache:'no-store', headers:{'x-spike-family':s.family,'x-spike-token':s.token}});
-      try { result = await response.json(); } catch (_) { result = null; }
+      response = await fetch(path, {method:'GET', cache:'no-store', signal, headers:{'x-spike-family':s.family,'x-spike-token':s.token}});
     } catch (_) {
       if (g !== epoch || scope !== s) throw stale();
       throw Error('Synthetic request failed.');
@@ -43,9 +42,11 @@
     if (g !== epoch || scope !== s) throw stale();
     if (response.status === 401 || response.status === 403) {
       const e = Error('Synthetic access denied'); e.denied = true;
-      if (!path.startsWith('/api/state')) {disconnect(); status('access denied');}
+      disconnect(); status('access denied');
       throw e;
     }
+    try { result = await response.json(); } catch (_) { result = null; }
+    if (g !== epoch || scope !== s) throw stale();
     if (!response.ok || !result || typeof result !== 'object' || Array.isArray(result)) throw Error('Synthetic request failed or unsupported.');
     return result;
   }
@@ -67,18 +68,24 @@
     }
   };
   function schedule() {
-    if (!scope || retryTimer || !navigator.onLine) return;
+    if (!scope || retryTimer || preflight || !navigator.onLine) return;
     const g = epoch, delay = Math.min(30000, 500 * 2 ** Math.min(attempts++, 6));
     retryTimer = setTimeout(async () => {
       retryTimer = null;
       if (g !== epoch || !scope) return;
       // A denied read is terminal even when the socket handshake cannot report why.
-      try {await request('/api/state');}
-      catch (e) {
-        if (g !== epoch) return;
-        if (e.denied) {disconnect(); status('access denied'); return;}
+      const controller = new AbortController(); preflight = controller;
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      try {
+        await request('/api/state', undefined, controller.signal);
+        if (g === epoch && scope && navigator.onLine && !controller.signal.aborted) openSocket();
+      } catch (e) {
+        // Retry only after the in-flight preflight has been detached.
+      } finally {
+        clearTimeout(timeout);
+        if (preflight === controller) preflight = null;
+        if (g === epoch && scope && navigator.onLine && !socket) schedule();
       }
-      if (g === epoch && scope && navigator.onLine) openSocket();
     }, delay);
   }
   function openSocket() {
@@ -107,9 +114,9 @@
     openSocket();
   }
   window.__BOD_SYNTHETIC_SPIKE__ = {enabled:true, request, context:()=>epoch,
-    accept(state) {
-      if (!Number.isSafeInteger(state.revision) || state.revision < 0 || state.revision < revision) return false;
-      revision = state.revision; return true;
+    accept(state, serial, settled) {
+      if (!Number.isSafeInteger(state.revision) || state.revision < 0 || state.revision < revision || (state.revision === revision && (serial <= acceptedSerial || serial < settled))) return false;
+      revision = state.revision; acceptedSerial = serial; return true;
     },
     attach(value) {hooks = value;}, connect, disconnect};
   el('connect').onclick = () => connect(el('family').value, el('token').value);
@@ -117,7 +124,7 @@
   el('family').onchange = () => disconnect();
   document.addEventListener('visibilitychange', () => {if (scope && document.visibilityState === 'visible' && navigator.onLine) {if (socket?.readyState === WebSocket.OPEN) reload(); else schedule();}});
   window.addEventListener('offline', () => {
-    clearTimeout(retryTimer); retryTimer = null;
+    clearTimeout(retryTimer); retryTimer = null; preflight?.abort(); preflight = null;
     if (socket) {const old = socket; socket = null; old.onmessage = old.onopen = old.onclose = old.onerror = null; old.close();}
     if (scope) {hooks?.clear(); status('offline');}
   });

@@ -57,6 +57,29 @@ class SyntheticLiveBank(DurableObject):
         finally:
             bank.now_ts = original
 
+    async def fixture_driver_mutate(self, family, token, operation, action, args, drop_notification=False):
+        try:
+            value = await self.fixture_mutate(family, token, operation, action, args, drop_notification)
+            return _rpc_result({'denied': False, 'value': value.to_py() if hasattr(value, 'to_py') else value})
+        except PermissionError:
+            return _rpc_result({'denied': True})
+
+    async def fixture_api_read(self, family, token, kind, kid_id=0):
+        # Only an explicitly caught authorization failure crosses RPC as denial.
+        try:
+            if kind == 'state':
+                value = await self.fixture_dashboard(family, token)
+            elif kind == 'transactions':
+                value = await self.fixture_transactions(family, token, kid_id)
+            elif kind == 'admin':
+                self._revision.snapshot(family, token)
+                value = _rpc_result({'pin_set': False})
+            else:
+                raise ValueError('unsupported')
+            return _rpc_result({'denied': False, 'value': value.to_py() if hasattr(value, 'to_py') else value})
+        except PermissionError:
+            return _rpc_result({'denied': True})
+
     async def fixture_clock(self, family, token, seconds):
         self._revision.snapshot(family, token)
         self.clock_offset = int(seconds)
@@ -84,8 +107,10 @@ class SyntheticLiveBank(DurableObject):
         token = request.headers.get('x-fixture-token')
         try:
             self._revision.snapshot(family, token)
+        except PermissionError:
+            return Response('access denied', status=403)
         except Exception:
-            return Response('denied', status=403)
+            return Response('synthetic request failed', status=500)
         client, server = WebSocketPair.new().object_values()
         server.accept()
         self.serial += 1

@@ -286,6 +286,119 @@ const crypto = require('node:crypto');
   assert.equal(await b.evaluate(()=>sockets.length),offlineCount);
   await b.evaluate(()=>{Object.defineProperty(navigator,'onLine',{configurable:true,value:true}); window.dispatchEvent(new Event('online'));});
   await b.waitForFunction(()=>document.querySelector('#spike-status').textContent==='connected');
+  // Socket loss invalidates an old modal request even after reconnect/reopen.
+  let releaseStaleHistory, sawStaleHistory;
+  const staleHistoryGate=new Promise(r=>releaseStaleHistory=r), staleHistorySeen=new Promise(r=>sawStaleHistory=r);
+  await b.route('**/api/transactions?*',async route=>{
+   const response=await route.fetch(), body=await response.json();
+   body.transactions=[{kind:'gift',amount_cents:100,note:'STALE HISTORY MARKER',ts:1}];
+   sawStaleHistory(); await staleHistoryGate; await route.fulfill({json:body});
+  },{times:1});
+  await b.locator('.btn-history').click(); await staleHistorySeen;
+  await b.evaluate(()=>sockets.findLast(s=>s.readyState===WebSocket.OPEN).close());
+  await b.waitForFunction(()=>document.querySelector('#spike-status').textContent==='connected');
+  await b.locator('.btn-history').click();
+  await b.locator('.tx-note').first().waitFor();
+  releaseStaleHistory(); await quiet();
+  assert.doesNotMatch(await b.locator('#modalCard').textContent(),/STALE HISTORY MARKER/);
+  await b.locator('#modal .close').click();
+  // Hanging preflight is aborted at five seconds and retries; no fake clock.
+  let releaseHang, hangSeen, stateCalls=0;
+  const hangGate=new Promise(r=>releaseHang=r), gotHang=new Promise(r=>hangSeen=r);
+  const hangRoute=async route=>{if (++stateCalls===1) {hangSeen(); await hangGate; try {await route.continue();} catch (_) {}} else await route.continue();};
+  await b.route('**/api/state',hangRoute);
+  await b.evaluate(()=>sockets.findLast(s=>s.readyState===WebSocket.OPEN).close());
+  await gotHang;
+  await b.waitForFunction(()=>document.querySelector('#spike-status').textContent==='connected',null,{timeout:15000});
+  assert.ok(stateCalls>=3, 'timed-out preflight was retried before snapshot');
+  releaseHang(); await b.unroute('**/api/state',hangRoute);
+  // Compress only reconnect timers to exercise the full backoff and cancellation.
+  await b.evaluate(()=>{window.realSetTimeout=window.setTimeout; window.retryDelays=[]; window.setTimeout=(fn,ms,...args)=>{if ([500,1000,2000,4000,8000,16000,30000].includes(ms)) {retryDelays.push(ms); return realSetTimeout(fn,Math.max(1,ms/100),...args);} return realSetTimeout(fn,ms,...args);};});
+  let failingPreflights=0;
+  const transientRoute=async route=>{failingPreflights++; await route.fulfill({status:500,body:'internal failure'});};
+  await b.route('**/api/state',transientRoute);
+  await b.evaluate(()=>sockets.findLast(s=>s.readyState===WebSocket.OPEN).close());
+  await b.waitForFunction(()=>retryDelays.includes(30000),null,{timeout:10000});
+  const delays=await b.evaluate(()=>retryDelays.slice());
+  assert.deepEqual(delays.slice(0,7),[500,1000,2000,4000,8000,16000,30000]);
+  assert.equal(await b.locator('#spike-token').inputValue(),ta[1]);
+  await b.locator('#spike-logout').click();
+  const stopped=failingPreflights; await new Promise(r=>setTimeout(r,500));
+  assert.equal(failingPreflights,stopped,'logout canceled capped retry');
+  await b.unroute('**/api/state',transientRoute);
+  await b.evaluate(()=>{window.setTimeout=window.realSetTimeout;});
+  await connect(b,F,ta[1]);
+  // A family switch cancels a pending retry, before a new context is opened.
+  await b.evaluate(()=>sockets.findLast(s=>s.readyState===WebSocket.OPEN).close());
+  await b.waitForFunction(()=>document.querySelector('#spike-status').textContent==='reconnecting');
+  let switchedRequests=0; const countSwitch=req=>{if(req.url().endsWith('/api/state')) switchedRequests++;};
+  b.on('request',countSwitch);
+  await b.locator('#spike-family').selectOption(G);
+  await new Promise(r=>setTimeout(r,900));
+  assert.equal(switchedRequests,0,'family switch canceled pending retry'); b.off('request',countSwitch);
+  await connect(b,F,ta[1]);
+  // Switching family also aborts a preflight already in flight.
+  let releaseSwitchHang, switchHangSeen;
+  const switchHangGate=new Promise(r=>releaseSwitchHang=r), gotSwitchHang=new Promise(r=>switchHangSeen=r);
+  await b.evaluate(()=>{window.realFetch=window.fetch; window.preflightAborts=0; window.fetch=(url,opts)=>{if (url==='/api/state' && opts?.signal) opts.signal.addEventListener('abort',()=>preflightAborts++); return realFetch(url,opts);};});
+  await b.route('**/api/state',async route=>{switchHangSeen(); await switchHangGate; try {await route.continue();} catch (_) {}},{times:1});
+  await b.evaluate(()=>sockets.findLast(s=>s.readyState===WebSocket.OPEN).close());
+  await gotSwitchHang;
+  await b.locator('#spike-family').selectOption(G);
+  assert.equal(await b.evaluate(()=>preflightAborts),1);
+  releaseSwitchHang(); await b.evaluate(()=>{window.fetch=window.realFetch;});
+  await connect(b,F,ta[1]);
+  // A late denial belonging to the old family cannot revoke the new one.
+  let releaseOldDenial, sawOldDenial;
+  const oldDenialGate=new Promise(r=>releaseOldDenial=r), oldDenialSeen=new Promise(r=>sawOldDenial=r);
+  await b.route('**/api/state',async route=>{sawOldDenial(); await oldDenialGate; await route.fulfill({status:403,body:'denied'});},{times:1});
+  await b.evaluate(()=>{window.oldDenial=refresh().catch(e=>e.name);}); await oldDenialSeen;
+  await connect(b,G,tb[0]);
+  releaseOldDenial(); assert.equal(await b.evaluate(()=>oldDenial),'AbortError');
+  assert.equal(await b.locator('#spike-token').inputValue(),tb[0]);
+  await connect(b,F,ta[1]);
+  // The actual gateway sanitizes unexpected internal failures as 500, not 403.
+  const badInternal=await fetch(process.env.DRIVER_URL+'/__test/mutate',{method:'POST',headers:{'content-type':'application/json','x-test-secret':process.env.TEST_SECRET},body:JSON.stringify({family:F,token:ta[0],operation:crypto.randomUUID(),action:'not-supported',args:[]})});
+  assert.equal(badInternal.status,500);
+  assert.deepEqual(await badInternal.json(),{ok:false,error:'synthetic request failed'});
+  // Older-started request reads after a newer request: durable revision wins.
+  let releaseHigh, highSeen;
+  const highGate=new Promise(r=>releaseHigh=r), gotHigh=new Promise(r=>highSeen=r);
+  await b.route('**/api/state',async route=>{highSeen(); await highGate; await route.continue();},{times:1});
+  await b.evaluate(()=>{window.highRequest=refresh();}); await gotHigh;
+  await b.evaluate(()=>refresh());
+  await control('mutate',{family:F,token:ta[0],operation:crypto.randomUUID(),action:'gift',args:[1,10,'higher older request'],dropNotification:true});
+  releaseHigh(); await b.evaluate(()=>highRequest);
+  assert.equal(await b.evaluate(()=>STATE.kids[0].wallet_cents),835);
+  // A later hung equal-revision request must not starve an earlier completion.
+  let releaseFirstEqual, releaseSecondEqual, firstEqualSeen, secondEqualSeen, equalCalls=0;
+  const firstEqualGate=new Promise(r=>releaseFirstEqual=r), secondEqualGate=new Promise(r=>releaseSecondEqual=r);
+  const sawFirstEqual=new Promise(r=>firstEqualSeen=r), sawSecondEqual=new Promise(r=>secondEqualSeen=r);
+  const equalRoute=async route=>{if (++equalCalls===1) {firstEqualSeen(); await firstEqualGate;} else {secondEqualSeen(); await secondEqualGate;} await route.continue();};
+  await b.route('**/api/state',equalRoute);
+  await b.evaluate(()=>{window.renders=0; const original=render; window.render=()=>{renders++; original();};});
+  await b.evaluate(()=>{window.firstEqual=refresh();}); await sawFirstEqual;
+  await b.evaluate(()=>{window.secondEqual=refresh();}); await sawSecondEqual;
+  const beforeEqual=await b.evaluate(()=>renders);
+  releaseFirstEqual(); await b.evaluate(()=>firstEqual);
+  assert.equal(await b.evaluate(()=>renders),beforeEqual+1);
+  releaseSecondEqual(); await b.evaluate(()=>secondEqual);
+  await b.unroute('**/api/state',equalRoute);
+  // Earlier denial is terminal even after a later transient failure.
+  let releaseDenied, denialSeen;
+  const denialGate=new Promise(r=>releaseDenied=r), gotDenial=new Promise(r=>denialSeen=r);
+  let denialCalls=0;
+  const denialRoute=async route=>{if (++denialCalls===1) {denialSeen(); await denialGate; await route.fulfill({status:403,body:'denied'});} else await route.fulfill({status:500,body:'internal'});};
+  await b.route('**/api/state',denialRoute);
+  await b.evaluate(()=>{window.denialRequest=refresh().catch(e=>e.message);}); await gotDenial;
+  await b.evaluate(()=>refresh().catch(()=>{}));
+  assert.equal(await b.locator('#spike-token').inputValue(),ta[1]);
+  releaseDenied(); await b.evaluate(()=>denialRequest);
+  assert.equal(await b.locator('#spike-token').inputValue(),'');
+  assert.equal(await b.locator('#kids').textContent(),'');
+  assert.equal(await b.locator('#spike-status').textContent(),'access denied');
+  await b.unroute('**/api/state',denialRoute);
+  await connect(b,F,ta[1]);
   // Revocation makes the next reconciliation fail closed and stops retries.
   await control('revoke',{family:F,token:ta[1]});
   await b.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));

@@ -34,6 +34,9 @@ const serverNow = () => SERVER_NOW + (Date.now() / 1000 - FETCH_AT);
 const SYNTHETIC = ["127.0.0.1", "localhost", "[::1]"].includes(location.hostname) &&
   window.__BOD_SYNTHETIC_SPIKE__?.enabled === true ? window.__BOD_SYNTHETIC_SPIKE__ : null;
 let syntheticRefresh = 0;
+let syntheticSettled = 0;
+let syntheticHistory = 0;
+let syntheticView = 0;
 let DAD_PIN = null; // remembered after a correct entry, for this page session
 
 async function api(path, body) {
@@ -50,15 +53,24 @@ async function api(path, body) {
 
 async function refresh() {
   const context = SYNTHETIC?.context();
+  const view = syntheticView;
   const serial = SYNTHETIC ? ++syntheticRefresh : 0;
   let state;
   try { state = await api("/api/state"); }
   catch (error) {
-    // A later same-context request supersedes failures as well as successes.
-    if (SYNTHETIC && context === SYNTHETIC.context() && serial !== syntheticRefresh) return false;
+    // Suppress stale transient errors, but never a current-context denial.
+    if (SYNTHETIC && context === SYNTHETIC.context() && view === syntheticView) {
+      syntheticSettled = Math.max(syntheticSettled, serial);
+      if (!error.denied && serial !== syntheticRefresh) return false;
+    }
     throw error;
   }
-  if (SYNTHETIC && (context !== SYNTHETIC.context() || serial !== syntheticRefresh || !SYNTHETIC.accept(state))) return false;
+  if (SYNTHETIC) {
+    if (context !== SYNTHETIC.context() || view !== syntheticView) return false;
+    const accepted = SYNTHETIC.accept(state, serial, syntheticSettled);
+    syntheticSettled = Math.max(syntheticSettled, serial);
+    if (!accepted) return false;
+  }
   STATE = state;
   SERVER_NOW = STATE.server_now || Date.now() / 1000;
   FETCH_AT = Date.now() / 1000;
@@ -670,6 +682,7 @@ function spinHero(kidId, delta) {
 }
 
 function modalClose() {
+  if (SYNTHETIC) syntheticHistory++;
   $("#modal").classList.add("hidden");
   $("#modal").classList.remove("graph-panel");
   $("#modalCard").classList.remove("graph-modal-card");
@@ -926,12 +939,15 @@ function agoLabel(ts) {
 }
 
 async function openHistoryModal(k) {
+  const generation = ++syntheticHistory;
+  const context = SYNTHETIC?.context();
   const card = $("#modalCard");
   card.innerHTML = `<h2>📜 ${esc(k.name)}'s History</h2><div class="tx-list">Loading…</div>
     <button class="close">Close</button>`;
   $(".close", card).onclick = modalClose;
   $("#modal").classList.remove("hidden");
   const r = await api(`/api/transactions?kid_id=${k.id}`);
+  if (SYNTHETIC && (generation !== syntheticHistory || context !== SYNTHETIC.context())) return;
   const list = $(".tx-list", card);
   if (!r.transactions || !r.transactions.length) {
     list.innerHTML = `<p class="pool-empty">No history yet — collect, save or spend to get started! 🌱</p>`;
@@ -1299,6 +1315,9 @@ wireGlobal();
 if (SYNTHETIC) {
   SYNTHETIC.attach({ refresh, clear() {
     syntheticRefresh++;
+    syntheticSettled = syntheticRefresh;
+    syntheticHistory++;
+    syntheticView++;
     STATE = { kids: [], config: null };
     SERVER_NOW = FETCH_AT = 0;
     DAD_PIN = null;

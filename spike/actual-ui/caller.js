@@ -27,7 +27,9 @@ export default {async fetch(request, env) {
       if (u.pathname === '/__test/mutate') {
         const {family,token,operation,action,args,dropNotification} = await request.json();
         if (!validFamily(family) || !token || !operation || !Array.isArray(args)) throw Error('test input');
-        return Response.json(await env.BANK.get(env.BANK.idFromName(family)).fixture_mutate(family,token,operation,action,args,dropNotification === true));
+        const result = await env.BANK.get(env.BANK.idFromName(family)).fixture_driver_mutate(family,token,operation,action,args,dropNotification === true);
+        if (result.denied) return Response.json({ok:false,error:'access denied'},{status:403});
+        return Response.json(result.value);
       }
       if (['/__test/clock','/__test/revoke','/__test/short-grant'].includes(u.pathname)) {
         const {family,token,seconds} = await request.json();
@@ -42,22 +44,22 @@ export default {async fetch(request, env) {
     if (request.method !== 'GET') return new Response('read-only synthetic dashboard', {status:405});
     const family = u.pathname === '/__spike/socket' ? u.searchParams.get('family') : request.headers.get('x-spike-family');
     const token = u.pathname === '/__spike/socket' ? u.searchParams.get('token') : request.headers.get('x-spike-token');
-    if (!validFamily(family) || !token) throw Error('scope');
+    if (!validFamily(family) || !token) return Response.json({ok:false,error:'access denied'},{status:403});
     const stub = env.BANK.get(env.BANK.idFromName(family));
     if (u.pathname === '/__spike/socket') {
       const headers = new Headers(request.headers);
       headers.set('x-fixture-family', family); headers.set('x-fixture-token', token);
-      return stub.fetch(new Request(new URL('/socket',u), {headers}));
+      return await stub.fetch(new Request(new URL('/socket',u), {headers}));
     }
     // Every read, including fake Dad status, must authorize at the Python DO.
     if (request.method === 'GET') {
-      if (u.pathname === '/api/state') return Response.json(await stub.fixture_dashboard(family,token));
-      if (u.pathname === '/api/transactions') return Response.json(await stub.fixture_transactions(family,token,Number(u.searchParams.get('kid_id'))));
-      if (u.pathname === '/api/admin/status') {
-        await stub.read(family,token,'kids',[]);
-        return Response.json({pin_set:false}); // fixture bypass only, no real PIN claim
+      const kind = {'/api/state':'state','/api/transactions':'transactions','/api/admin/status':'admin'}[u.pathname];
+      if (kind) {
+        const result = await stub.fixture_api_read(family, token, kind, Number(u.searchParams.get('kid_id')));
+        if (result.denied) return Response.json({ok:false,error:'access denied'},{status:403});
+        return Response.json(result.value);
       }
     }
     return new Response('unsupported synthetic contract', {status:404});
-  } catch(e) {return Response.json({ok:false,error:'synthetic request denied or failed'},{status:403});}
+  } catch(e) {return Response.json({ok:false,error:'synthetic request failed'},{status:500});}
 }};
