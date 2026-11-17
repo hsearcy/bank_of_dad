@@ -74,11 +74,12 @@ over-limit data; do not bypass the guards or edit a real database to recover it.
 ## Tests (synthetic data only)
 
 ```sh
-python3 -m unittest discover -s tests_hosted -p 'test_foundation.py' -v
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m unittest discover -s tests_hosted -p 'test_foundation.py' -v
 (cd tests_hosted && npm ci --ignore-scripts)
-TMPDIR=/home/ares/.hermes/cache/scratch python3 tests_hosted/integration.py
-python3 -m pip install -r requirements.txt
-TMPDIR=/home/ares/.hermes/cache/scratch python3 -m unittest discover -s tests -v
+TMPDIR="${TMPDIR:-/tmp}" .venv/bin/python tests_hosted/integration.py
+TMPDIR="${TMPDIR:-/tmp}" .venv/bin/python -m unittest discover -s tests -v
 ```
 
 The integration harness creates a temporary Wrangler config, source copies,
