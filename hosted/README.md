@@ -2,7 +2,9 @@
 
 This is internal storage code, not a hosted product. For the separate internal
 identity and membership directory foundation, its trust contract and unresolved
-integration gaps, see [IDENTITY.md](IDENTITY.md).
+integration gaps, see [IDENTITY.md](IDENTITY.md). The separate experimental
+co-located authorization slice and its critical bypass and integration limits are
+in [FAMILY_AUTH.md](FAMILY_AUTH.md); it does not protect `FamilyBank`.
 `hosted.object.FamilyBank`
 has no HTTP handler. Each instance must be bound to exactly one family's DO
 storage. A future trusted caller must authenticate the principal, authorize the

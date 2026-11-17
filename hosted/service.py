@@ -191,31 +191,33 @@ class FamilyService:
             if not conn.execute('SELECT 1 AS present FROM kids WHERE id=?', (args[0],)).fetchone():
                 raise ValueError('invalid request')
 
-    def mutate(self, operation_id, action, args):
+    def _mutate(self, conn, operation_id, action, args):
         if not isinstance(operation_id, str) or not operation_id or len(operation_id) > 200:
             raise ValueError('valid operation ID required')
         payload = self._validate(_MUTATIONS, action, args)
-        def apply(conn):
-            self._initialize(conn)
-            self._check_state(conn)
-            self._require_child(conn, action, args)
-            row = conn.execute('SELECT payload, result FROM hosted_operations WHERE operation_id=?', (operation_id,)).fetchone()
-            if row:
-                if row['payload'] != payload:
-                    raise ValueError('operation ID reused with different payload')
-                return json.loads(row['result'])
-            result = _MUTATIONS[action](conn, *args)
-            self._check_state(conn)
-            encoded = json.dumps(result, ensure_ascii=False, allow_nan=False, separators=(',', ':'))
-            conn.execute('INSERT INTO hosted_operations(operation_id, payload, result) VALUES(?,?,?)', (operation_id, payload, encoded))
-            return json.loads(encoded)
-        return self._transaction(apply)
+        self._initialize(conn)
+        self._check_state(conn)
+        self._require_child(conn, action, args)
+        row = conn.execute('SELECT payload, result FROM hosted_operations WHERE operation_id=?', (operation_id,)).fetchone()
+        if row:
+            if row['payload'] != payload:
+                raise ValueError('operation ID reused with different payload')
+            return json.loads(row['result'])
+        result = _MUTATIONS[action](conn, *args)
+        self._check_state(conn)
+        encoded = json.dumps(result, ensure_ascii=False, allow_nan=False, separators=(',', ':'))
+        conn.execute('INSERT INTO hosted_operations(operation_id, payload, result) VALUES(?,?,?)', (operation_id, payload, encoded))
+        return json.loads(encoded)
+
+    def mutate(self, operation_id, action, args):
+        return self._transaction(lambda conn: self._mutate(conn, operation_id, action, args))
+
+    def _read(self, conn, action, args):
+        self._validate(_READS, action, args)
+        self._initialize(conn)
+        self._check_state(conn)
+        self._require_child(conn, action, args)
+        return _READS[action](conn, *args)
 
     def read(self, action, args):
-        self._validate(_READS, action, args)
-        def apply(conn):
-            self._initialize(conn)
-            self._check_state(conn)
-            self._require_child(conn, action, args)
-            return _READS[action](conn, *args)
-        return self._transaction(apply)
+        return self._transaction(lambda conn: self._read(conn, action, args))
