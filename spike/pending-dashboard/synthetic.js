@@ -64,6 +64,9 @@
   // bank action return contracts. Fail closed if either side evolves separately.
   const text = value => typeof value === 'string' && Array.from(value).length <= 500;
   const positiveInt = value => Number.isSafeInteger(value) && value > 0 && value <= 1_000_000_000;
+  // Python str.isspace()/str.strip(), not ECMAScript trim (which removes
+  // U+FEFF but omits U+0085 and U+001C–U+001F). Keep in sync with Python.
+  const pythonWhitespace = /^[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/u;
   function validPending(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value) ||
         Object.keys(value).sort().join(',') !== 'acknowledged,operation_id,request,result' ||
@@ -74,7 +77,7 @@
     let validArgs = false, validResult = false;
     switch (action) {
       case 'add_kid':
-        validArgs = args.length === 3 && args.every(text) && args[0].trim().length > 0;
+        validArgs = args.length === 3 && args.every(text) && !pythonWhitespace.test(args[0]);
         validResult = value.result === true;
         break;
       case 'gift':

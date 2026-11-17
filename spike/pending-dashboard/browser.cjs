@@ -32,6 +32,15 @@ async function contains(p,s) {await p.waitForFunction(s=>document.querySelector(
   await Promise.all(pages.map(p=>contains(p,xss)));
   for(const p of pages) {assert.equal(await p.evaluate(()=>window.xss),undefined); assert.equal(await p.locator('#spike-pending img').count(),0);}
   await driver(F,'acknowledge',[F,t1,'kid',true]); await Promise.all(pages.map(p=>contains(p,'No pending operation.')));
+  // Genuine canonical payloads pass through Python DO, JS adapter and both UIs.
+  for (const [id,name] of [['bom','\ufeff'],['unicode','\u0085\u001c\ufeff🐣\u200b\u0085'],['long','🐣'.repeat(500)]]) {
+   assert.equal(await driver(F,'mutate',[F,t1,id,'add_kid',[name]]),true);
+   for (const p of pages) {
+    await contains(p,'Operation ID: '+id);
+    assert.ok((await p.locator('#spike-pending').textContent()).includes(JSON.stringify(['add_kid',[name,'🐣','#4f9dde']],null,2)));
+   }
+   await driver(F,'acknowledge',[F,t1,id,true]); await Promise.all(pages.map(p=>contains(p,'No pending operation.')));
+  }
   const before=await (await fetch(base+'/api/state',{headers:{'x-spike-family':F,'x-spike-token':t1}})).json();
   const failure=[false,'Nothing to take out']; assert.deepEqual(await driver(F,'mutate',[F,t1,'false','withdraw',[1,1]]),failure);
   await Promise.all(pages.map(p=>contains(p,'Nothing to take out')));
@@ -68,6 +77,12 @@ async function contains(p,s) {await p.waitForFunction(s=>document.querySelector(
   await a.route('**/api/pending',async route=>{const response=await route.fetch(); seen(); await held; await route.fulfill({response});settled();},{times:1});
   await a.evaluate(()=>document.dispatchEvent(new Event('visibilitychange'))); await reached; await a.locator('#spike-logout').click(); release(); await done; await pause(200); await contains(a,'Disconnected; pending status unknown.');
   await a.unroute('**/api/pending'); await connect(a,F,fresh); await contains(a,'Nothing to take out');
+  // A success from the previous grant cannot populate a different principal's view.
+  let releaseGrant,seenGrant,settledGrant; const grantReached=new Promise(r=>seenGrant=r), grantHeld=new Promise(r=>releaseGrant=r), grantDone=new Promise(r=>settledGrant=r);
+  await a.route('**/api/pending',async route=>{const response=await route.fetch();seenGrant();await grantHeld;await route.fulfill({response});settledGrant();},{times:1});
+  await a.evaluate(()=>window.reconcile()); await grantReached; await connect(a,F,other); await contains(a,'No pending operation.');
+  releaseGrant(); await grantDone; await pause(200); await contains(a,'No pending operation.');
+  await a.unroute('**/api/pending'); await connect(a,F,fresh); await contains(a,'Nothing to take out');
   // Held response must not leak into a switched family.
   let release2,seen2,settled2; const reached2=new Promise(r=>seen2=r), held2=new Promise(r=>release2=r), done2=new Promise(r=>settled2=r);
   await a.route('**/api/pending',async route=>{const response=await route.fetch();seen2();await held2;await route.fulfill({response});settled2();},{times:1});
@@ -82,7 +97,7 @@ async function contains(p,s) {await p.waitForFunction(s=>document.querySelector(
    {...gift,operation_id:1}, {...gift,acknowledged:0}, {...gift,acknowledged:true},
    {...gift,extra:1}, {...gift,result:null}, {...gift,result:0}, {...gift,result:{}},
    {...gift,request:{}}, {...gift,request:['unknown',[]]}, {...gift,request:['gift',[true,1,'n']]},
-   {...gift,request:['gift',[1,1.5,'n']]}, {...gift,request:['gift',[1,0,'n']]},
+   {...gift,request:['gift',[1,1.5,'n']]}, {...gift,request:['gift',[1,0,'n']]}, {...gift,request:['gift',[1,1000000001,'n']]},
    {...gift,request:['gift',[1,1,null]]}, {...gift,request:['gift',[1,1,'n','extra']]},
    {...gift,request:['gift',[1,1,'n']],result:[false,'bad']},
    {...gift,request:['withdraw',[1,1]],result:[0,'bad']},
@@ -91,9 +106,13 @@ async function contains(p,s) {await p.waitForFunction(s=>document.querySelector(
    {...zero,result:false}, {...zero,result:-1}, {...zero,result:1.5},
    {...zero,request:['collect_rewards',[1,'bogus']]},
    {...gift,request:['add_kid',['','x','y']],result:true},
+   ...['\u0085','\u001c\u2000\u3000','\t\n'].map(name=>({...gift,request:['add_kid',[name,'x','y']],result:true})),
+   {...gift,request:['add_kid',['🐣'.repeat(501),'x','y']],result:true},
    {...gift,request:['invest',[1,{},1]],result:[false,'bad']}];
   const noResult={...gift}; delete noResult.result; invalid.push(noResult);
   const noRequest={...gift}; delete noRequest.request; invalid.push(noRequest);
+  const noId={...gift}; delete noId.operation_id; invalid.push(noId);
+  const noAcknowledged={...gift}; delete noAcknowledged.acknowledged; invalid.push(noAcknowledged);
   for (const p of pages) {
    async function inject(body, expected) {
     await p.route('**/api/pending',route=>route.fulfill({status:200,contentType:'application/json',body}));
@@ -122,6 +141,9 @@ async function contains(p,s) {await p.waitForFunction(s=>document.querySelector(
   await a.evaluate(()=>window.reconcile()); await reachedDenialPromise;
   await a.evaluate(()=>window.reconcile()); await contains(a,'No pending operation.');
   releaseDenial(); await a.waitForFunction(()=>document.querySelector('#spike-status').textContent==='access denied'); await contains(a,'pending status unknown');
+  await connect(a,G,gt); await contains(a,'No pending operation.');
+  await a.route('**/api/pending',route=>route.fulfill({status:401,body:'denied'}),{times:1});
+  await a.evaluate(()=>window.reconcile()); await a.waitForFunction(()=>document.querySelector('#spike-status').textContent==='access denied'); await contains(a,'pending status unknown');
   // Exercise zero through the actual Python recovery result boundary; a false
   // gift result is valid at the bank contract but unreachable through current guards.
   await Promise.all(pages.map(p=>connect(p,G,gt))); await Promise.all(pages.map(p=>contains(p,'No pending operation.')));
