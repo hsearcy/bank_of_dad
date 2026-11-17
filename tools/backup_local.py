@@ -21,25 +21,41 @@ def backup(source, output):
     # Do not let SQLite create a database for a missing or non-file source.
     if not stat.S_ISREG(source.stat().st_mode):
         raise ValueError("source must be an existing regular file")
-    # Includes broken symlinks. os.link below also enforces this atomically.
+    # SQLite resolves source symlinks; protect both the given and resolved names.
+    resolved_source = source.resolve(strict=True)
+    resolved_output = output.resolve(strict=False)
+    sidecars = {Path(str(name) + suffix).resolve(strict=False)
+                for name in (source, resolved_source)
+                for suffix in ('-wal', '-shm', '-journal')}
+    if resolved_output in sidecars:
+        raise ValueError("output must not be a source SQLite sidecar")
+    # Includes broken symlinks; link's no-replacement rule is the actual guard.
     if os.path.lexists(output):
         raise FileExistsError("output already exists")
 
-    source_uri = source.as_uri() + "?mode=ro"
-    temporary = None
-    try:
+    source_uri = resolved_source.as_uri() + "?mode=ro"
+    # The directory and its ancestors must be trusted against rename/substitution.
+    # A 0700 directory prevents other users from replacing the SQLite temp file.
+    with tempfile.TemporaryDirectory(prefix=".bod-backup-", dir=output.parent) as private:
+        fd, temporary = tempfile.mkstemp(prefix="snapshot-", dir=private)
+        os.close(fd)
         with closing(sqlite3.connect(source_uri, uri=True)) as src:
-            fd, temporary = tempfile.mkstemp(prefix=".bod-backup-", dir=output.parent)
-            os.close(fd)  # mkstemp creates the file with owner-only permissions.
             with closing(sqlite3.connect(temporary)) as dst:
                 src.backup(dst)
                 check_integrity(dst)
-            # Publish only the completed file, without replacing any existing name.
-            # Both paths are in the same directory, so this is an atomic link.
-            os.link(temporary, output)
-    finally:
-        if temporary is not None:
-            os.unlink(temporary)
+        # Anchor both link endpoints to opened directories. link() creates a new
+        # directory entry or fails; it never replaces/follows the final destination.
+        parent_fd = os.open(output.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            private_fd = os.open(private, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.link(os.path.basename(temporary), output.name,
+                        src_dir_fd=private_fd, dst_dir_fd=parent_fd,
+                        follow_symlinks=False)
+            finally:
+                os.close(private_fd)
+        finally:
+            os.close(parent_fd)
 
 
 def main(argv=None):
