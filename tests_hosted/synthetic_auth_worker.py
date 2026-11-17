@@ -1,5 +1,6 @@
 """Unauthenticated loopback test fixture only. Never deploy."""
 import json
+import time
 from urllib.parse import urlparse, parse_qs
 from workers import WorkerEntrypoint, DurableObject, Response
 from hosted.family_auth import FamilyAuthorization
@@ -22,6 +23,11 @@ class SyntheticAuth(DurableObject):
                 result = auth.bank._transaction(lambda c: {
                     table: c.execute('SELECT * FROM ' + table + ' ORDER BY rowid').fetchall()
                     for table in tables})
+            elif action == 'seed_allowance':
+                # Test-only, disposable fixture: make two full allowance periods collectible.
+                result = auth.bank._transaction(lambda c: c.execute(
+                    'UPDATE kids SET allowance_anchor_ts=? WHERE id=1',
+                    (int(time.time()) - 14 * 86400 - 60,)).fetchall())
             elif action == 'fault':
                 original = auth.bank.conn.execute
                 def fail(sql, params=()):

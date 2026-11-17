@@ -2,6 +2,7 @@ import unittest
 import sqlite3
 import threading
 import concurrent.futures
+import json
 from unittest.mock import patch
 from test_foundation import Storage
 from hosted.family_auth import FamilyAuthorization, MAX_TTL
@@ -10,6 +11,14 @@ F = 'a' * 32
 OWNER = {'issuer': 'https://issuer.test', 'subject': 'owner'}
 PARENT = {'issuer': 'https://issuer.test', 'subject': 'parent'}
 OTHER = {'issuer': 'https://issuer.test', 'subject': 'other'}
+
+BANK_TABLES = ('kids', 'bonds', 'transactions', 'history', 'settings',
+               'hosted_schema', 'sqlite_sequence')
+OP_TABLES = ('hosted_operations', 'local_operations')
+
+def snapshot(storage, tables=BANK_TABLES + OP_TABLES):
+    return {table: [tuple(row) for row in storage.db.execute(
+        'SELECT * FROM ' + table + ' ORDER BY rowid')] for table in tables}
 
 class AuthorizationTest(unittest.TestCase):
     def setUp(self):
@@ -96,6 +105,9 @@ class AuthorizationTest(unittest.TestCase):
                 for (action, args), (result, balances, entry) in zip(cases.items(), expected):
                     with self.subTest(role=role, action=action):
                         self.assertEqual(a.mutate(F, token, action, action, args), result)
+                        after = snapshot(s)
+                        self.assertEqual(a.mutate(F, token, action, action, args), result)
+                        self.assertEqual(snapshot(s), after)
                         if entry:
                             ledger.insert(0, entry)
                             w, saving, invest = balances
@@ -137,6 +149,40 @@ class AuthorizationTest(unittest.TestCase):
         before = self.a.read(F, self.owner, 'kids', [])
         self.assertEqual(self.a.mutate(F, replacement, 'same-principal', 'gift', [1, 7]), result)
         self.assertEqual(self.a.read(F, self.owner, 'kids', []), before)
+
+    def test_business_failure_and_missing_child_retry_for_each_role(self):
+        for role in ('owner', 'parent'):
+            with self.subTest(role=role):
+                s = Storage(); self.addCleanup(s.db.close)
+                a = FamilyAuthorization(s, lambda x: x, lambda: self.now)
+                a.bootstrap_privileged(F, OWNER)
+                owner = a.issue_grant_privileged(F, OWNER, 100)
+                a.set_member(F, owner, PARENT, 'parent', 'active')
+                token = owner if role == 'owner' else a.issue_grant_privileged(F, PARENT, 100)
+                self.assertTrue(a.mutate(F, owner, 'seed', 'add_kid', ['Seed']))
+                self.assertEqual(a.mutate(F, owner, 'empty', 'spend', [1, 500]), [True, 'Spent!'])
+                before_bank = snapshot(s, BANK_TABLES)
+                before_ops = snapshot(s, OP_TABLES)
+                failure = [False, 'No coins to spend']
+                self.assertEqual(a.mutate(F, token, 'failed', 'spend', [1, 1]), failure)
+                self.assertEqual(snapshot(s, BANK_TABLES), before_bank)
+                after = snapshot(s)
+                self.assertEqual(len(after['hosted_operations']), len(before_ops['hosted_operations']) + 1)
+                self.assertEqual(len(after['local_operations']), len(before_ops['local_operations']) + 1)
+                self.assertEqual(json.loads(s.db.execute("SELECT result FROM hosted_operations WHERE operation_id='failed'").fetchone()[0]), failure)
+                self.assertEqual(tuple(s.db.execute("SELECT issuer, subject FROM local_operations WHERE operation_id='failed'").fetchone()),
+                                 ('https://issuer.test', role))
+                self.assertEqual(a.mutate(F, token, 'failed', 'spend', [1, 1]), failure)
+                self.assertEqual(snapshot(s), after)
+                for _ in range(2):
+                    with self.assertRaisesRegex(ValueError, '^invalid request$'):
+                        a.mutate(F, token, 'missing', 'gift', [999, 1])
+                    self.assertEqual(snapshot(s), after)
+                self.assertTrue(a.mutate(F, owner, 'refill', 'gift', [1, 5]))
+                funded = snapshot(s)
+                self.assertEqual(a.mutate(F, token, 'failed', 'spend', [1, 1]), failure)
+                self.assertEqual(snapshot(s), funded)
+                self.assertEqual(a.mutate(F, token, 'fresh-spend', 'spend', [1, 1]), [True, 'Spent!'])
 
     def test_disable_invalidates_all_active_grants_across_reactivation(self):
         a = self.a

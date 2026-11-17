@@ -32,6 +32,61 @@ def main():
                     except urllib.error.HTTPError as e: r=e
                     with r:
                         body=json.load(r); assert r.status == status, (action,body); return body
+                # Separate disposable object per role; all money operations begin funded.
+                for role in ('owner', 'parent'):
+                    obj = 'replay-' + role
+                    def req(action, args, status=200):
+                        return call(action, args, status=status, object_name=obj)
+                    req('bootstrap_privileged', [F, O])
+                    own = req('issue_grant_privileged', [F, O, 100])['result']
+                    req('set_member', [F, own, P, 'parent', 'active'])
+                    token = own if role == 'owner' else req('issue_grant_privileged', [F, P, 100])['result']
+                    assert req('mutate', [F, own, 'seed', 'add_kid', ['Seed']])['result'] is True
+                    req('seed_allowance', [])
+                    assert req('read', [F, token, 'kids', []])['result'][0]['pending_allowance_cents'] == 300
+                    cases = [('add_kid', ['Extra'], True), ('gift', [1, 100], True),
+                             ('save', [1, 10], [True, 'Saved!']), ('withdraw', [1, 1], [True, 'Done!']),
+                             ('spend', [1, 1], [True, 'Spent!']), ('invest', [1, '1mo', 4], [True, 'Locked in!']),
+                             ('collect_rewards', [1, 'allowance'], 300)]
+                    for action, args, expected in cases:
+                        request = [F, token, action, action, args]
+                        assert req('mutate', request)['result'] == expected, (role, action)
+                        state = req('snapshot', [])['result']
+                        assert req('mutate', request)['result'] == expected, (role, action, 'retry')
+                        assert req('snapshot', [])['result'] == state, (role, action, 'state')
+                    state = req('snapshot', [])['result']
+                    kid = req('read', [F, token, 'kids', []])['result'][0]
+                    assert (kid['wallet_cents'], kid['savings_cents'], kid['invest_cents']) == (886, 9, 4)
+                    assert [(r['kind'], r['amount_cents']) for r in state['transactions']] == [
+                        ('gift', 100), ('save', 10), ('withdraw', 1), ('spend', -1),
+                        ('invest', 4), ('allowance', 300)]
+                    assert len(state['bonds']) == 1 and state['bonds'][0]['principal_cents'] == 4
+                    # Empty the wallet with a distinct operation, then check a cached failure.
+                    wallet = req('read', [F, token, 'kids', []])['result'][0]['wallet_cents']
+                    assert req('mutate', [F, own, 'empty', 'spend', [1, wallet]])['result'] == [True, 'Spent!']
+                    before = req('snapshot', [])['result']
+                    failed = [F, token, 'failed', 'spend', [1, 1]]
+                    assert req('mutate', failed)['result'] == [False, 'No coins to spend']
+                    after = req('snapshot', [])['result']
+                    for table in before.keys() - {'hosted_operations', 'local_operations'}:
+                        assert after[table] == before[table], (role, table)
+                    assert len(after['hosted_operations']) == len(before['hosted_operations']) + 1
+                    assert len(after['local_operations']) == len(before['local_operations']) + 1
+                    result_row = next(r for r in after['hosted_operations'] if r['operation_id'] == 'failed')
+                    owner_row = next(r for r in after['local_operations'] if r['operation_id'] == 'failed')
+                    assert json.loads(result_row['result']) == [False, 'No coins to spend']
+                    assert (owner_row['issuer'], owner_row['subject']) == ('https://issuer.test', role)
+                    assert req('mutate', failed)['result'] == [False, 'No coins to spend']
+                    assert req('snapshot', [])['result'] == after
+                    for _ in range(2):
+                        error = req('mutate', [F, token, 'missing', 'gift', [999, 1]], status=500)
+                        assert (error['type'], error['error']) == ('ValueError', 'invalid request')
+                        assert req('snapshot', [])['result'] == after
+                    assert req('mutate', [F, own, 'refill', 'gift', [1, 5]])['result'] is True
+                    funded = req('snapshot', [])['result']
+                    assert req('mutate', failed)['result'] == [False, 'No coins to spend']
+                    assert req('snapshot', [])['result'] == funded
+                    assert req('mutate', [F, token, 'fresh-spend', 'spend', [1, 1]])['result'] == [True, 'Spent!']
                 call('bootstrap_privileged',[F,O])
                 family2 = 'b'*32
                 call('bootstrap_privileged',[family2,O],object_name='two')
