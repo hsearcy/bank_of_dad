@@ -111,6 +111,28 @@ def main():
                     assert req('mutate', failed)['result'] == [False, 'No coins to spend']
                     assert req('snapshot', [])['result'] == funded
                     assert req('mutate', [F, token, 'fresh-spend', 'spend', [1, 1]])['result'] == [True, 'Spent!']
+                def exercise_interest(obj, request, expected_result, ledger, balances, history):
+                    before = call('snapshot', [], object_name=obj)['result']
+                    for fault, message in [('fault_after_interest', 'after positive interest bank mutation'),
+                                           ('fault', 'after bank write and both operation records')]:
+                        error = call(fault, request, status=500, object_name=obj)
+                        assert error['type'] == 'RuntimeError' and message in error['error'], (obj, fault, error)
+                        # Includes all bank tables, history, sequences and both operation tables.
+                        assert call('snapshot', [], object_name=obj)['result'] == before, (obj, fault)
+                    assert call('mutate', request, object_name=obj)['result'] == expected_result
+                    after = call('snapshot', [], object_name=obj)['result']
+                    assert [(r['kid_id'], r['kind'], r['amount_cents'], r['note'], r['bond_id'])
+                            for r in after['transactions']] == ledger, obj
+                    kid = after['kids'][0]
+                    assert (kid['wallet_cents'], kid['savings_cents']) == balances, obj
+                    assert [(h['kid_id'], h['networth_cents'], h['wallet_cents'],
+                             h['savings_cents'], h['invest_cents']) for h in after['history']] == history, obj
+                    for table in ('hosted_operations', 'local_operations'):
+                        assert len(after[table]) == len(before[table]) + 1, (obj, table)
+                        assert sum(r['operation_id'] == request[2] for r in after[table]) == 1, (obj, table)
+                    assert call('mutate', request, object_name=obj)['result'] == expected_result
+                    assert call('snapshot', [], object_name=obj)['result'] == after, obj
+
                 # Accrued interest capitalized by a withdrawal is its own
                 # ledger row and the retry must not record it twice.
                 obj = 'interest-once'
@@ -120,15 +142,11 @@ def main():
                 call('mutate', [F, tok, 'save', 'save', [1, 500]], object_name=obj)
                 call('seed_interest', [], object_name=obj)
                 request = [F, tok, 'withdraw', 'withdraw', [1, 1]]
-                assert call('mutate', request, object_name=obj)['result'] == [True, 'Done!']
-                after = call('snapshot', [], object_name=obj)['result']
-                assert [(r['kind'], r['amount_cents']) for r in after['transactions']] == [('save', 500), ('interest', 20), ('withdraw', 1)]
-                kid = after['kids'][0]
-                assert (kid['wallet_cents'], kid['savings_cents']) == (1, 519)
-                h = after['history'][-1]
-                assert (h['kid_id'], h['networth_cents'], h['wallet_cents'], h['savings_cents'], h['invest_cents']) == (1, 520, 1, 519, 0)
-                assert call('mutate', request, object_name=obj)['result'] == [True, 'Done!']
-                assert call('snapshot', [], object_name=obj)['result'] == after
+                exercise_interest(obj, request, [True, 'Done!'],
+                                  [(1, 'save', 500, 'Moved to savings', None),
+                                   (1, 'interest', 20, 'Savings interest', None),
+                                   (1, 'withdraw', 1, 'Savings to wallet', None)],
+                                  (1, 519), [(1, 500, 0, 500, 0), (1, 520, 1, 519, 0)])
                 # Separate object and real bank clock, not the unrelated grant clock.
                 obj = 'interest-save-once'
                 call('bootstrap_privileged', [F, O], object_name=obj)
@@ -141,15 +159,11 @@ def main():
                 call('mutate', [F, tok, 'initial-save', 'save', [1, 400]], object_name=obj)
                 call('seed_interest', [], object_name=obj)
                 request = [F, tok, 'save-accrued', 'save', [1, 10]]
-                assert call('mutate', request, object_name=obj)['result'] == [True, 'Saved!']
-                after = call('snapshot', [], object_name=obj)['result']
-                assert [(r['kind'], r['amount_cents']) for r in after['transactions']] == [('save', 400), ('interest', 16), ('save', 10)]
-                kid = after['kids'][0]
-                assert (kid['wallet_cents'], kid['savings_cents']) == (90, 426)
-                h = after['history'][-1]
-                assert (h['kid_id'], h['networth_cents'], h['wallet_cents'], h['savings_cents'], h['invest_cents']) == (1, 516, 90, 426, 0)
-                assert call('mutate', request, object_name=obj)['result'] == [True, 'Saved!']
-                assert call('snapshot', [], object_name=obj)['result'] == after
+                exercise_interest(obj, request, [True, 'Saved!'],
+                                  [(1, 'save', 400, 'Moved to savings', None),
+                                   (1, 'interest', 16, 'Savings interest', None),
+                                   (1, 'save', 10, 'Moved to savings', None)],
+                                  (90, 426), [(1, 500, 100, 400, 0), (1, 516, 90, 426, 0)])
                 call('bootstrap_privileged',[F,O])
                 family2 = 'b'*32
                 call('bootstrap_privileged',[family2,O],object_name='two')

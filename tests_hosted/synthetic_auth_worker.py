@@ -41,11 +41,15 @@ class SyntheticAuth(DurableObject):
                     except ValueError:
                         pass
                 result = auth.bank._transaction(op)
-            elif action == 'fault':
+            elif action in ('fault', 'fault_after_interest'):
                 original = auth.bank.conn.execute
                 def fail(sql, params=()):
                     result = original(sql, params)
-                    if sql.startswith('INSERT INTO local_operations'):
+                    if (action == 'fault_after_interest' and
+                            sql.startswith('INSERT INTO transactions') and
+                            params[2] == 'interest' and params[3] > 0):
+                        raise RuntimeError('after positive interest bank mutation')
+                    if action == 'fault' and sql.startswith('INSERT INTO local_operations'):
                         raise RuntimeError('after bank write and both operation records')
                     return result
                 auth.bank.conn.execute = fail
