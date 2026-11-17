@@ -1,6 +1,9 @@
 # Hosted storage foundation — not deployable
 
-This is internal storage code, not a hosted product. `hosted.object.FamilyBank`
+This is internal storage code, not a hosted product. For the separate internal
+identity and membership directory foundation, its trust contract and unresolved
+integration gaps, see [IDENTITY.md](IDENTITY.md).
+`hosted.object.FamilyBank`
 has no HTTP handler. Each instance must be bound to exactly one family's DO
 storage. A future trusted caller must authenticate the principal, authorize the
 requested family and operation, and resolve the family DO server-side. DO IDs,
@@ -98,7 +101,7 @@ Cloudflare runtime. Tests access no existing family DB.
 ## Before any real use
 
 Authentication, authorization, the family-to-object mapping, RPC serialization,
-request validation at the trust boundary, secure session/revocation, app/API
+request validation at the trust boundary, end-to-end secure session/revocation, app/API
 integration, backup/recovery, limits and abuse controls, billing, and production
 Cloudflare behavior remain unimplemented or unverified. The current local test
 uses synthetic HTTP to call the service *within* a subclass, not actual
