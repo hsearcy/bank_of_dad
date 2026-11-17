@@ -66,6 +66,7 @@ class FamilyService:
         self.storage = storage
         self.conn = Connection(storage.sql)
         self.proxy_factory = proxy_factory
+        self._combined_mutation = False
 
     def _transaction(self, operation):
         if self.conn._active:
@@ -219,6 +220,15 @@ class FamilyService:
             raise ValueError('valid operation ID required')
         payload = self._validate(_MUTATIONS, action, args)
         self._initialize(conn)
+        # The combined fixture must exclusively enter through its recovery and
+        # revision coordinator. This is a misuse guard, not a Python sandbox.
+        marker = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='local_auth_schema'").fetchone()
+        combined = False
+        if marker:
+            versions = conn.execute('SELECT version FROM local_auth_schema').fetchall()
+            combined = any(row['version'] == 3 for row in versions)
+        if combined and not self._combined_mutation:
+            raise RuntimeError('combined family requires recovery revision coordinator')
         self._check_state(conn)
         self._require_child(conn, action, args)
         row = conn.execute('SELECT payload, result FROM hosted_operations WHERE operation_id=?', (operation_id,)).fetchone()
