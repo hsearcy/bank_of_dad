@@ -1,31 +1,51 @@
-"""Unwired, local synthetic experiment. Not an RPC or a production service.
+"""Local synthetic revision helper. Not an RPC or a production service.
 
-The caller must bootstrap a disposable family first, install the revision marker
-once during fixture setup, and exclusively route all subsequent bank mutations
-through this object. It is not a migration for any existing bank.
+The caller must use the atomic fresh bootstrap and exclusively route all bank
+mutations through this object. It is not a migration for any existing bank.
 """
+
+from hosted.directory import _family, _principal
+from hosted.family_auth import _SCHEMA
+import hashlib
+import json
 
 _TABLE = 'CREATE TABLE fixture_revision (version INTEGER NOT NULL, revision INTEGER NOT NULL)'
 _MAX_REVISION = 2**53 - 1
+# Exact catalog for this synthetic prototype's supported schema. Schema changes
+# require an explicit new fixture version, never implicit adoption/migration.
+_CATALOG_SHA256 = 'e59e77fba74180506e6aaeac09ebc4f520b2b4403df26ce6a794138c0ec07e86'
 
 
 class RevisionFixture:
     def __init__(self, authorization):
         self.auth = authorization
 
-    def install_for_fresh_fixture(self, family, token):
+    def bootstrap_fresh(self, family, owner, fault=False):
+        """Initialize the entire disposable schema and marker in one transaction."""
+        _family(family)
+        principal = _principal(owner)
         def install(c):
-            self.auth._auth(c, family, token)
-            if c.execute("SELECT name FROM sqlite_master WHERE name='fixture_revision'").fetchone():
-                raise RuntimeError('revision already exists; no migration available')
-            if (c.execute('SELECT count(*) AS n FROM hosted_operations').fetchone()['n'] or
-                    c.execute('SELECT count(*) AS n FROM kids').fetchone()['n']):
+            if c.execute("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").fetchall():
                 raise RuntimeError('fresh empty fixture required; no migration available')
+            self.auth.bank._initialize(c)
+            for sql in _SCHEMA.values():
+                c.execute(sql)
+            c.execute('INSERT INTO local_auth_schema VALUES (1, ?)', (family,))
+            c.execute("INSERT INTO local_members VALUES (?, ?, 'owner', 'active')", principal)
             c.execute(_TABLE)
             c.execute('INSERT INTO fixture_revision VALUES (1, 0)')
+            self.auth._check(c, family)
+            self._revision(c)
+            if fault:
+                raise RuntimeError('synthetic bootstrap fault')
         self.auth.bank._transaction(install)
 
     def _revision(self, c):
+        catalog = c.execute('SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name').fetchall()
+        values = [[row[k] for k in ('type', 'name', 'tbl_name', 'sql')] for row in catalog]
+        digest = hashlib.sha256(json.dumps(values, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+        if digest != _CATALOG_SHA256:
+            raise RuntimeError('unsupported fixture schema; no migration available')
         rows = c.execute("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name='fixture_revision' OR tbl_name='fixture_revision'").fetchall()
         if len(rows) != 1 or tuple(rows[0][k] for k in ('type', 'name', 'tbl_name', 'sql')) != ('table', 'fixture_revision', 'fixture_revision', _TABLE):
             raise RuntimeError('unsupported revision schema; no migration available')
@@ -42,7 +62,7 @@ class RevisionFixture:
         return self.auth.bank._transaction(read)
 
     def mutate(self, family, token, operation_id, action, args, fault=False):
-        if action not in ('gift', 'save', 'spend'):
+        if action not in ('add_kid', 'gift', 'save', 'spend'):
             raise ValueError('unsupported fixture mutation')
         def operation(c):
             self.auth._auth(c, family, token)

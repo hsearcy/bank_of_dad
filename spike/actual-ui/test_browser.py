@@ -11,6 +11,7 @@ def main():
         for name in ('bank.py','db.py','config.py'):
             shutil.copyfile(ROOT/name,src/name)
         shutil.copytree(ROOT/'hosted',src/'hosted',ignore=shutil.ignore_patterns('__pycache__'))
+        shutil.copyfile(ROOT/'spike/sync-revision/revision.py', src/'revision.py')
         for source,target in [('bank_worker.py','worker.py'),('caller.js','caller.js')]:
             shutil.copyfile(ROOT/'spike/actual-ui'/source,src/target)
         # Reuse Flask's exact pure config contract without importing app.py,

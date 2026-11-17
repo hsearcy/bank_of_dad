@@ -1,26 +1,30 @@
 """SYNTHETIC LOOPBACK FIXTURE ONLY. Never deploy or use real identities/data."""
-from workers import WorkerEntrypoint, Response
+from workers import WorkerEntrypoint, DurableObject, Response
 from js import WebSocketPair
 from pyodide.ffi import create_proxy
-from hosted.object import FamilyBank, _rpc_result
+from hosted.object import _rpc_result
+from hosted.family_auth import FamilyAuthorization
+from revision import RevisionFixture
 import bank
 import json
 from dashboard_contract import cfg
 
 OWNER = {'issuer': 'https://synthetic.invalid', 'subject': 'owner'}
 
-class SyntheticLiveBank(FamilyBank):
+class SyntheticLiveBank(DurableObject):
     def __init__(self, ctx, env):
         super().__init__(ctx, env)
+        self._authorization = FamilyAuthorization(ctx.storage)
+        self._revision = RevisionFixture(self._authorization)
         self.sessions = {}
         self.serial = 0
 
     async def fixture_setup(self, family):
         a = self._authorization
-        a.bootstrap_privileged(family, OWNER)
+        self._revision.bootstrap_fresh(family, OWNER)
         one = a.issue_grant_privileged(family, OWNER, 3600)
         two = a.issue_grant_privileged(family, OWNER, 3600)
-        a.mutate(family, one, 'fixture-kid', 'add_kid', ['Synthetic child', '🦊', '#123456'])
+        self._revision.mutate(family, one, 'fixture-kid', 'add_kid', ['Synthetic child', '🦊', '#123456'])
         return _rpc_result([one, two])
 
     async def fixture_snapshot(self):
@@ -42,23 +46,25 @@ class SyntheticLiveBank(FamilyBank):
         a = self._authorization
         def read(c):
             a._auth(c, family, token)
+            revision = self._revision._revision(c)
             return {'kids': a.bank._read(c, 'kids', []), 'config': cfg(c),
-                    'server_now': bank.now_ts(c)}
+                    'server_now': bank.now_ts(c), 'revision': revision}
         return _rpc_result(a.bank._transaction(read))
 
     async def fixture_transactions(self, family, token, kid_id):
         a = self._authorization
         def read(c):
             a._auth(c, family, token)
+            revision = self._revision._revision(c)
             return {'transactions': a.bank._read(c, 'transactions', [kid_id]),
-                    'server_now': bank.now_ts(c)}
+                    'server_now': bank.now_ts(c), 'revision': revision}
         return _rpc_result(a.bank._transaction(read))
 
     async def fetch(self, request):
         family = request.headers.get('x-fixture-family')
         token = request.headers.get('x-fixture-token')
         try:
-            self._authorization.read(family, token, 'kids', [])
+            self._revision.snapshot(family, token)
         except Exception:
             return Response('denied', status=403)
         client, server = WebSocketPair.new().object_values()
@@ -74,36 +80,32 @@ class SyntheticLiveBank(FamilyBank):
         self.sessions[sid] = (server, family, token, close_proxy)
         return Response(None, status=101, web_socket=client)
 
-    def notify(self, send):
+    def _notify(self, changed_family, revision):
         for sid, (ws, family, token, proxy) in list(self.sessions.items()):
+            if family != changed_family:
+                continue
             try:
-                self._authorization.read(family, token, 'kids', [])
+                self._revision.snapshot(family, token)
             except Exception:
                 try: ws.close(1008, 'denied')
                 except Exception: pass
                 continue
-            if send:
-                try: ws.send('{"type":"invalidate"}')
-                except Exception: pass
+            try: ws.send(json.dumps({'type': 'invalidate', 'revision': revision}))
+            except Exception: pass
 
     async def fixture_mutate(self, family, token, operation_id, action, args):
         # Only the minimal actual UI contract is exposed in this fixture.
         if action not in ('gift', 'save', 'spend'):
             raise ValueError('unsupported synthetic mutation')
-        a = self._authorization
-        def exists(c):
-            a._auth(c, family, token)
-            return bool(c.execute('SELECT operation_id FROM local_operations WHERE operation_id=?', (operation_id,)).fetchone())
-        # No await between this check, the real atomic bank mutation, and push.
-        prior = a.bank._transaction(exists)
-        result = a.mutate(family, token, operation_id, action, args)
-        success = result[0] is True if isinstance(result, list) else bool(result)
-        if not prior and success:
-            self.notify(True)
+        result, revision, changed = self._revision.mutate(family, token, operation_id, action, args)
+        if changed:
+            self._notify(family, revision)
         return _rpc_result(result)
 
-    async def mutate(self, family, token, operation_id, action, args):
-        return await self.fixture_mutate(family, token, operation_id, action, args)
+    async def read(self, family, token, action, args):
+        if action != 'kids' or args != []:
+            raise ValueError('unsupported synthetic read')
+        return _rpc_result(self._revision.snapshot(family, token)['kids'])
 
 class Default(WorkerEntrypoint):
     pass
