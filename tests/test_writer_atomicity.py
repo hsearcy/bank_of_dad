@@ -1,10 +1,10 @@
 """Disposable, deterministic SQLite writer and transaction ownership regressions."""
 import os
+import select
 from contextlib import closing
 import sqlite3
 import subprocess
 import sys
-import select
 import tempfile
 import threading
 import unittest
@@ -146,21 +146,31 @@ class WriterAtomicityTests(unittest.TestCase):
         self.conn.execute('BEGIN IMMEDIATE')
         code = '''
 import sqlite3, sys, bank
-c = sqlite3.connect(sys.argv[1], timeout=3)
+c = sqlite3.connect(sys.argv[1], timeout=0)
 c.row_factory = sqlite3.Row
-print("ready", flush=True)
+try:
+    bank.gift(c, int(sys.argv[2]), 100)
+except sqlite3.OperationalError as exc:
+    assert exc.sqlite_errorcode == sqlite3.SQLITE_BUSY, exc
+    assert not c.in_transaction
+    print("contended", flush=True)
+else:
+    raise AssertionError("bank action unexpectedly acquired writer lock")
+assert sys.stdin.readline().strip() == "go"
+c.execute("PRAGMA busy_timeout=3000")
 assert bank.gift(c, int(sys.argv[2]), 100)
 print("done", flush=True)
 c.close()
 '''
         proc = subprocess.Popen([sys.executable, '-u', '-c', code, self.path, str(self.kid)],
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
-            self.assertEqual(proc.stdout.readline().strip(), 'ready')
-            self.assertFalse(select.select([proc.stdout], [], [], .2)[0])
+            assert proc.stdout is not None
+            self.assertTrue(select.select([proc.stdout], [], [], 5)[0], 'child did not report contention')
+            self.assertEqual(proc.stdout.readline().strip(), 'contended')
             self.assertTrue(bank.move_to_savings(self.conn, self.kid, 200)[0])
             self.conn.commit()
-            stdout, stderr = proc.communicate(timeout=5)
+            stdout, stderr = proc.communicate(input='go\n', timeout=5)
             self.assertEqual(proc.returncode, 0, stderr)
             self.assertEqual(stdout.strip(), 'done')
             self.assertEqual(self.state(), (900, 200))
@@ -170,6 +180,173 @@ c.close()
             if proc.poll() is None:
                 proc.kill()
                 proc.communicate()
+
+    def test_admin_helpers_respect_caller_transaction(self):
+        cases = [
+            lambda c: bank.set_rates(c, 7, {next(iter(config.BONDS)): 12}),
+            lambda c: bank.fast_forward(c, 3),
+            lambda c: bank.add_kid(c, 'new'),
+            lambda c: bank.update_kid(c, self.kid, name='changed'),
+            lambda c: bank.set_dad_pin(c, '1234'),
+        ]
+        for call in cases:
+            with self.subTest(call=call):
+                before = list(self.conn.iterdump())
+                self.conn.execute('BEGIN')
+                db.set_setting(self.conn, 'outer', 'pending')
+                call(self.conn)
+                self.assertTrue(self.conn.in_transaction)
+                self.conn.rollback()
+                self.assertEqual(list(self.conn.iterdump()), before)
+
+    def test_admin_helpers_commit_owned_transactions_and_failure_preserves_outer(self):
+        self.assertTrue(bank.set_rates(self.conn, 7, {next(iter(config.BONDS)): 12}))
+        bank.fast_forward(self.conn, 3)
+        self.assertTrue(bank.add_kid(self.conn, 'new'))
+        self.assertTrue(bank.update_kid(self.conn, self.kid, name='changed'))
+        self.assertTrue(bank.set_dad_pin(self.conn, '1234')[0])
+        self.assertFalse(self.conn.in_transaction)
+        with closing(self.connect()) as observer:
+            self.assertEqual(bank.savings_weekly_rate(observer), 7 / 100)
+            self.assertEqual(float(db.get_setting(observer, 'time_offset', '0')), 3 * 86400)
+            self.assertEqual(observer.execute('SELECT name FROM kids WHERE id=?', (self.kid,)).fetchone()[0], 'changed')
+            self.assertEqual(observer.execute('SELECT count(*) FROM kids').fetchone()[0], 2)
+            self.assertTrue(bank.check_dad_pin(observer, '1234'))
+        self.conn.execute('BEGIN')
+        db.set_setting(self.conn, 'outer', 'pending')
+        with self.assertRaises(ValueError):
+            bank.set_rates(self.conn, 9, {next(iter(config.BONDS)): 'invalid'})
+        self.assertTrue(self.conn.in_transaction)
+        self.assertEqual(db.get_setting(self.conn, 'outer'), 'pending')
+        self.assertEqual(bank.savings_weekly_rate(self.conn), 7 / 100)
+        self.conn.rollback()
+
+    def test_admin_failure_atomicity_and_noop(self):
+        before = list(self.conn.iterdump())
+        with self.assertRaises(ValueError):
+            bank.set_rates(self.conn, 5, {next(iter(config.BONDS)): 'invalid'})
+        self.assertEqual(list(self.conn.iterdump()), before)
+        self.assertFalse(bank.update_kid(self.conn, -1, name='missing'))
+        self.assertFalse(bank.set_dad_pin(self.conn, 'bad')[0])
+        self.assertEqual(list(self.conn.iterdump()), before)
+
+    def test_shared_connection_rejects_overlap_and_allows_reentrancy(self):
+        entered, release = threading.Event(), threading.Event()
+        errors = []
+        conn = self.connect(check_same_thread=False)
+        original = bank._record_history
+        def pause(c, kid, now):
+            entered.set()
+            if not release.wait(5):
+                raise RuntimeError('timeout')
+            original(c, kid, now)
+        def worker():
+            try:
+                bank.move_to_savings(conn, self.kid, 200)
+            except BaseException as exc:
+                errors.append(exc)
+        with patch.object(bank, '_record_history', side_effect=pause):
+            t = threading.Thread(target=worker)
+            t.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                for call in (lambda: bank.gift(conn, self.kid, 100),
+                             lambda: bank.fast_forward(conn, 1),
+                             lambda: bank.set_rates(conn, 2)):
+                    with self.assertRaisesRegex(RuntimeError, 'same connection'):
+                        call()
+            finally:
+                release.set()
+                t.join(5)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(errors, [])
+        self.assertTrue(bank.gift(conn, self.kid, 100))
+        self.assertEqual(self.state(), (900, 200))
+        @bank._serialized_accrual_action
+        def composed(c):
+            bank.fast_forward(c, 1)
+            return bank.gift(c, self.kid, 10)
+        self.assertTrue(composed(conn))
+        before = list(conn.iterdump())
+        @bank._serialized_accrual_action
+        def failing_composition(c):
+            bank.fast_forward(c, 1)
+            bank.gift(c, self.kid, 10)
+            raise RuntimeError('after nested writes')
+        with self.assertRaisesRegex(RuntimeError, 'after nested writes'):
+            failing_composition(conn)
+        self.assertEqual(list(conn.iterdump()), before)
+        conn.close()
+
+    def test_fast_forward_locks_before_read_with_deterministic_contention(self):
+        entered, release = threading.Event(), threading.Event()
+        errors = []
+        original = db.get_setting
+
+        def paused_get(conn, key, default=None):
+            value = original(conn, key, default)
+            if key == 'time_offset' and threading.current_thread().name == 'clock-writer':
+                entered.set()
+                if not release.wait(5):
+                    raise RuntimeError('clock writer timed out')
+            return value
+
+        def worker():
+            try:
+                with closing(self.connect()) as conn:
+                    bank.fast_forward(conn, 1)
+            except BaseException as exc:
+                errors.append(exc)
+
+        with patch.object(db, 'get_setting', side_effect=paused_get):
+            thread = threading.Thread(target=worker, name='clock-writer')
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                with closing(self.connect()) as contender:
+                    contender.execute('PRAGMA busy_timeout=0')
+                    with self.assertRaises(sqlite3.OperationalError) as raised:
+                        bank.fast_forward(contender, 1)
+                    self.assertEqual(raised.exception.sqlite_errorcode, sqlite3.SQLITE_BUSY)
+                    self.assertFalse(contender.in_transaction)
+            finally:
+                release.set()
+                thread.join(5)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+        bank.fast_forward(self.conn, 1)
+        self.assertEqual(float(db.get_setting(self.conn, 'time_offset', '0')), 2 * 86400)
+
+    def test_concurrent_fast_forward(self):
+        barrier = threading.Barrier(3)
+        errors = []
+        def worker():
+            c = self.connect()
+            try:
+                barrier.wait(timeout=5)
+                for _ in range(10):
+                    bank.fast_forward(c, 1)
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                c.close()
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads: t.start()
+        barrier.wait(timeout=5)
+        for t in threads: t.join(10)
+        self.assertFalse(any(t.is_alive() for t in threads))
+        self.assertEqual(errors, [])
+        self.assertEqual(float(db.get_setting(self.conn, 'time_offset')), 20 * 86400)
+
+    def test_sqlite_can_abort_outer_transaction(self):
+        self.conn.execute("CREATE TRIGGER abort_gift BEFORE INSERT ON transactions BEGIN SELECT RAISE(ROLLBACK, 'fatal'); END")
+        self.conn.execute('BEGIN')
+        db.set_setting(self.conn, 'outer', 'value')
+        with self.assertRaisesRegex(sqlite3.IntegrityError, 'fatal'):
+            bank.gift(self.conn, self.kid, 100)
+        self.assertFalse(self.conn.in_transaction)
+        self.assertIsNone(db.get_setting(self.conn, 'outer'))
+        self.assertEqual(self.state(), (1000, 0))
 
     def test_unknown_adapter_fails_before_any_sql(self):
         class Unsupported:

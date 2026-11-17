@@ -10,10 +10,74 @@ sleeps for days and there's no cron to babysit.
 import hashlib
 import sqlite3
 import time
+import threading
 from functools import wraps
 
 import config
 import db
+
+
+# Active entries are removed on exit; closed connections are not retained.
+_active_connections = {}
+_active_connections_lock = threading.Lock()
+
+
+def _serialized_accrual_action(fn):
+    """Serialize writers before their first read, without owning caller work.
+
+    A caller transaction gets a savepoint and an attempted write lock. A stale
+    WAL read snapshot cannot be upgraded: SQLite raises BUSY_SNAPSHOT and the
+    caller must restart its outer transaction. Never commit that transaction.
+    """
+    @wraps(fn)
+    def run(conn, *args, **kwargs):
+        if not isinstance(conn, sqlite3.Connection):
+            raise TypeError("bank actions require a sqlite3.Connection; adapters need an equivalent transaction implementation")
+        thread_id = threading.get_ident()
+        key = id(conn)
+        with _active_connections_lock:
+            active = _active_connections.get(key)
+            if active is not None and active[1] != thread_id:
+                raise RuntimeError("concurrent bank actions on the same connection are unsupported")
+            _active_connections[key] = (conn, thread_id, 1 if active is None else active[2] + 1)
+        try:
+            return _run_locked(conn, *args, **kwargs)
+        finally:
+            with _active_connections_lock:
+                _, owner, depth = _active_connections[key]
+                if depth == 1:
+                    del _active_connections[key]
+                else:
+                    _active_connections[key] = (conn, owner, depth - 1)
+
+    def _run_locked(conn, *args, **kwargs):
+        started = not conn.in_transaction
+        if started:
+            conn.execute("BEGIN IMMEDIATE")
+        else:
+            conn.execute("SAVEPOINT bank_action")
+        try:
+            if not started:
+                # A deferred caller transaction may have no write lock yet.
+                # This acquires SQLite's database-wide writer reservation without
+                # changing a row or firing row triggers.
+                conn.execute("UPDATE kids SET id=id WHERE 0")
+            result = fn(conn, *args, **kwargs)
+            conn.execute("COMMIT" if started else "RELEASE SAVEPOINT bank_action")
+            return result
+        except BaseException as error:
+            try:
+                if conn.in_transaction:
+                    if started:
+                        conn.execute("ROLLBACK")
+                    else:
+                        conn.execute("ROLLBACK TO SAVEPOINT bank_action")
+                        conn.execute("RELEASE SAVEPOINT bank_action")
+            except sqlite3.Error as cleanup_error:
+                if hasattr(error, "add_note"):
+                    error.add_note(f"Transaction cleanup failed: {cleanup_error}")
+            raise
+    return run
 
 
 # ---------------------------------------------------------------------------
@@ -24,10 +88,10 @@ def now_ts(conn):
     return time.time() + offset
 
 
+@_serialized_accrual_action
 def fast_forward(conn, days):
     offset = float(db.get_setting(conn, "time_offset", "0") or 0)
     db.set_setting(conn, "time_offset", offset + days * 86400)
-    conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +129,7 @@ def bond_return_pct(conn, term_key):
     return config.BONDS.get(term_key, {}).get("return_pct", 0)
 
 
+@_serialized_accrual_action
 def set_rates(conn, savings_weekly_pct=None, returns=None):
     """Dad sets savings %/week and per-term investment return %. `returns` is a
     dict like {"1mo": 25, "3mo": 100}."""
@@ -73,7 +138,6 @@ def set_rates(conn, savings_weekly_pct=None, returns=None):
     for key, pct in (returns or {}).items():
         if key in config.BONDS:
             db.set_setting(conn, "return_pct_" + key, max(0.0, float(pct)))
-    conn.commit()
     return True
 
 
@@ -220,40 +284,6 @@ def _tx(conn, kid_id, now, kind, amount, note="", bond_id=None):
 # ---------------------------------------------------------------------------
 # Actions — these mutate and commit.
 # ---------------------------------------------------------------------------
-def _serialized_accrual_action(fn):
-    """Serialize writers before their first read, without owning caller work.
-
-    A caller transaction gets a savepoint and an attempted write lock. A stale
-    WAL read snapshot cannot be upgraded: SQLite raises BUSY_SNAPSHOT and the
-    caller must restart its outer transaction. Never commit that transaction.
-    """
-    @wraps(fn)
-    def run(conn, *args, **kwargs):
-        if not isinstance(conn, sqlite3.Connection):
-            raise TypeError("bank actions require a sqlite3.Connection; adapters need an equivalent transaction implementation")
-        started = not conn.in_transaction
-        if started:
-            conn.execute("BEGIN IMMEDIATE")
-        else:
-            conn.execute("SAVEPOINT bank_action")
-        try:
-            if not started:
-                # A deferred caller transaction may have no write lock yet.
-                # This acquires SQLite's database-wide writer reservation without
-                # changing a row or firing row triggers.
-                conn.execute("UPDATE kids SET id=id WHERE 0")
-            result = fn(conn, *args, **kwargs)
-            conn.execute("COMMIT" if started else "RELEASE SAVEPOINT bank_action")
-            return result
-        except BaseException:
-            if conn.in_transaction:
-                if started:
-                    conn.execute("ROLLBACK")
-                else:
-                    conn.execute("ROLLBACK TO SAVEPOINT bank_action")
-                    conn.execute("RELEASE SAVEPOINT bank_action")
-            raise
-    return run
 
 
 @_serialized_accrual_action
@@ -507,6 +537,7 @@ def gift(conn, kid_id, amount_cents, note="From Dad"):
     return True
 
 
+@_serialized_accrual_action
 def add_kid(conn, name, emoji="🐣", color="#4f9dde"):
     now = now_ts(conn)
     conn.execute(
@@ -517,10 +548,10 @@ def add_kid(conn, name, emoji="🐣", color="#4f9dde"):
            VALUES (?,?,?,?,0,?,0,?,?)""",
         (name, color, emoji, config.STARTING_WALLET_CENTS, now, now, now),
     )
-    conn.commit()
     return True
 
 
+@_serialized_accrual_action
 def update_kid(conn, kid_id, name=None, emoji=None, color=None):
     kid = conn.execute("SELECT * FROM kids WHERE id=?", (kid_id,)).fetchone()
     if not kid:
@@ -529,7 +560,6 @@ def update_kid(conn, kid_id, name=None, emoji=None, color=None):
         "UPDATE kids SET name=?, emoji=?, color=? WHERE id=?",
         (name or kid["name"], emoji or kid["emoji"], color or kid["color"], kid_id),
     )
-    conn.commit()
     return True
 
 
@@ -616,6 +646,7 @@ def check_dad_pin(conn, pin):
     return bool(pin) and _hash_pin(pin) == stored
 
 
+@_serialized_accrual_action
 def set_dad_pin(conn, new_pin, current_pin=None):
     """Set or change the PIN. If one already exists, current_pin must match.
     Pass an empty/None new_pin to remove the PIN."""
@@ -624,10 +655,8 @@ def set_dad_pin(conn, new_pin, current_pin=None):
     new_pin = (str(new_pin) if new_pin is not None else "").strip()
     if new_pin == "":
         conn.execute("DELETE FROM settings WHERE key='dad_pin_hash'")
-        conn.commit()
         return True, "PIN removed"
     if not (new_pin.isdigit() and 4 <= len(new_pin) <= 8):
         return False, "PIN must be 4–8 digits"
     db.set_setting(conn, "dad_pin_hash", _hash_pin(new_pin))
-    conn.commit()
     return True, "PIN saved"
