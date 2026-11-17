@@ -51,7 +51,13 @@ async function api(path, body) {
 async function refresh() {
   const context = SYNTHETIC?.context();
   const serial = SYNTHETIC ? ++syntheticRefresh : 0;
-  const state = await api("/api/state");
+  let state;
+  try { state = await api("/api/state"); }
+  catch (error) {
+    // A later same-context request supersedes failures as well as successes.
+    if (SYNTHETIC && context === SYNTHETIC.context() && serial !== syntheticRefresh) return false;
+    throw error;
+  }
   if (SYNTHETIC && (context !== SYNTHETIC.context() || serial !== syntheticRefresh)) return false;
   STATE = state;
   SERVER_NOW = STATE.server_now || Date.now() / 1000;
@@ -471,6 +477,7 @@ function kidCard(k) {
   $$(".reward-btn", el).forEach((b) => {
     b.onclick = (e) => onCollect(k, b.dataset.kind, e);
   });
+  if (SYNTHETIC) $$(".reward-btn, .btn-save, .btn-bond, .btn-spend", el).forEach((b) => { b.disabled = true; });
   $(".btn-save", el).onclick = () => openSaveModal(k);
   $(".btn-bond", el).onclick = () => openBondModal(k);
   $(".btn-spend", el).onclick = () => openSpendModal(k);
@@ -612,6 +619,7 @@ function tick() {
 // on tap, and the server call runs in the background — so latency to the server
 // never leaves a kid tapping a dead button. We already know the amount client-side.
 function onCollect(k, kind, ev) {
+  if (SYNTHETIC) return;
   const btn = ev.currentTarget;
   if (!btn || btn._busy) return;                 // guard against double-tap
   btn._busy = true;
@@ -778,6 +786,7 @@ function wireEnterToBlur(card) {
 }
 
 function openSaveModal(k) {
+  if (SYNTHETIC) return;
   const card = $("#modalCard");
   const cfg = STATE.config;
   card.innerHTML = `
@@ -818,6 +827,7 @@ function openSaveModal(k) {
 }
 
 function openBondModal(k) {
+  if (SYNTHETIC) return;
   const card = $("#modalCard");
   const cfg = STATE.config;
   card._term = cfg.bonds[0].key;
@@ -867,6 +877,7 @@ function openBondModal(k) {
 }
 
 function openSpendModal(k) {
+  if (SYNTHETIC) return;
   const card = $("#modalCard");
   const cfg = STATE.config;
   card.innerHTML = `
@@ -941,6 +952,7 @@ async function openHistoryModal(k) {
 const AMOUNT_EDITABLE = new Set(["gift", "allowance", "interest", "spend"]);
 
 async function openEditHistory(k) {
+  if (SYNTHETIC) return;
   const card = $("#modalCard");
   const render = (txs) => {
     card.innerHTML = `<h2>📜 Edit ${esc(k.name)}'s transactions</h2>
@@ -1107,6 +1119,7 @@ function askPin(err, opts = {}) {
 // First-run: if no Dad PIN exists yet, force setting one before the app is used,
 // so the Dad controls are never left unprotected.
 async function ensurePinSetup() {
+  if (SYNTHETIC) return;
   const st = await api("/api/admin/status");
   if (st.pin_set) return;
   let err = "Welcome! Create a Dad PIN to protect the controls.";
@@ -1123,6 +1136,7 @@ async function ensurePinSetup() {
 
 /* ---- Dad panel ------------------------------------------------------- */
 async function openDad() {
+  if (SYNTHETIC) return;
   const st = await api("/api/admin/status");
   if (st.pin_set) {                  // ask for the PIN every single time
     let err = "";
@@ -1144,6 +1158,7 @@ function closeDad() {
 }
 
 function renderDadPanel() {
+  if (SYNTHETIC) return;
   const box = $("#dadKids");
   box.innerHTML = STATE.kids.map((k) => `
     <div class="dk" data-id="${k.id}">
@@ -1205,6 +1220,7 @@ function renderDadPanel() {
 
 // Dad-editable savings + investment rates.
 function renderDadRates() {
+  if (SYNTHETIC) return;
   const cfg = STATE.config;
   const box = $("#dadRates");
   if (!box) return;
@@ -1229,6 +1245,7 @@ function renderDadRates() {
 }
 
 async function changePin() {
+  if (SYNTHETIC) return;
   const st = await api("/api/admin/status");
   let current = null;
   if (st.pin_set) {
@@ -1243,9 +1260,14 @@ async function changePin() {
 }
 
 function wireGlobal() {
+  if (SYNTHETIC) {
+    $("#dadBtn").disabled = true;
+    $$("#dadPanel button:not(#closeDad), #dadPanel input").forEach((el) => { el.disabled = true; });
+  }
   $("#dadBtn").onclick = openDad;
   $("#closeDad").onclick = closeDad;
   $("#addKidBtn").onclick = async () => {
+    if (SYNTHETIC) return;
     const name = $("#newKidName").value.trim();
     if (!name) return;
     await api("/api/admin/kid", { name, emoji: $("#newKidEmoji").value || "🐣" });
@@ -1256,6 +1278,7 @@ function wireGlobal() {
   $("#changePinBtn").onclick = changePin;
   $$(".ff").forEach((b) => {
     b.onclick = async () => {
+      if (SYNTHETIC) return;
       await api("/api/admin/fastforward", { days: +b.dataset.days });
       await refresh();
       renderDadPanel();

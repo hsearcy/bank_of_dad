@@ -14,7 +14,7 @@ class SyntheticControlsAbsent(unittest.TestCase):
             script = '''
 import app
 client = app.app.test_client()
-for path in ('/__test/setup', '/__test/mutate', '/__spike/setup', '/__spike/socket'):
+for path in ('/__test/setup', '/__test/mutate', '/__test/snapshot', '/__spike/setup', '/__spike/socket'):
     for method in ('GET', 'POST'):
         response = client.open(path, method=method, json={})
         assert response.status_code == 404, (path, method, response.status_code)

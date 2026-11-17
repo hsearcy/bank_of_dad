@@ -32,8 +32,18 @@ const crypto = require('node:crypto');
   const setup=family=>control('setup',{family});
   const mutate=(family,token,action,args)=>control('mutate',{family,token,action,args,operation:crypto.randomUUID()});
   const ta=await setup(F), tb=await setup(G);
+  const snapshot=family=>control('snapshot',{family});
+  const beforeAll=await Promise.all([snapshot(F),snapshot(G)]);
+  for (const snap of beforeAll) {
+   assert.ok(Array.isArray(snap.schema));
+   assert.ok(snap.tables.sqlite_sequence);
+   assert.ok(snap.tables.kids);
+   assert.deepEqual(await snapshot(snap === beforeAll[0] ? F : G),snap);
+  }
   assert.equal((await a.request.get(process.env.BASE_URL+'/__test/mutate')).status(),405);
   assert.equal((await a.request.post(process.env.BASE_URL+'/__test/setup',{data:{family:F},headers:{'x-test-secret':process.env.TEST_SECRET}})).status(),405);
+  assert.equal((await a.request.post(process.env.BASE_URL+'/__test/snapshot',{data:{family:F},headers:{'x-test-secret':process.env.TEST_SECRET}})).status(),405);
+  assert.equal((await fetch(process.env.DRIVER_URL+'/__test/snapshot',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({family:F})})).status,403);
   assert.equal((await fetch(process.env.DRIVER_URL+'/__test/setup',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({family:F})})).status,403);
   const connect = async (p,f,t) => {
    await p.locator('#spike-family').selectOption(f);
@@ -55,6 +65,24 @@ const crypto = require('node:crypto');
   assert.match(await a.evaluate(()=>api('/api/not-supported',{x:1}).then(()=>'',e=>e.message)), /Read-only/);
   await Promise.all([a,b].map(p=>dashboard(p,5,0,5)));
   const before=await a.evaluate(()=>Promise.all([api('/api/state'),api('/api/transactions?kid_id=1')]));
+  // Disabled controls and direct handler calls cannot create optimistic effects.
+  for (const p of [a,b]) {
+   const attempted=await p.evaluate(async()=>{
+    STATE.kids[0].pending_cents=100; STATE.kids[0].pending_allowance_cents=100; render();
+    const btn=document.querySelector('.reward-btn');
+    const disabled=[...document.querySelectorAll('#dadBtn,#dadPanel button:not(#closeDad),#dadPanel input,.reward-btn,.btn-save,.btn-bond,.btn-spend')].every(x=>x.disabled);
+    const view=()=>JSON.stringify({kids:document.querySelector('#kids').innerHTML,modal:document.querySelector('#modal').outerHTML,dad:document.querySelector('#dadPanel').outerHTML,confetti:document.querySelector('#confetti').innerHTML,state:STATE});
+    const before=view();
+    btn.click(); btn.onclick({currentTarget:btn,clientX:0,clientY:0});
+    onCollect(STATE.kids[0],'allowance',{currentTarget:btn,clientX:0,clientY:0});
+    for (const sel of ['.btn-save','.btn-bond','.btn-spend','#dadBtn','#addKidBtn','#changePinBtn','.ff']) {const el=document.querySelector(sel); el.click(); await el.onclick?.({currentTarget:el});}
+    await Promise.all([openSaveModal(STATE.kids[0]),openBondModal(STATE.kids[0]),openSpendModal(STATE.kids[0]),openEditHistory(STATE.kids[0]),openDad(),ensurePinSetup(),changePin(),renderDadPanel(),renderDadRates()]);
+    await new Promise(r=>setTimeout(r,100));
+    return {disabled,unchanged:before===view()};
+   });
+   assert.deepEqual(attempted,{disabled:true,unchanged:true});
+   await p.evaluate(()=>refresh());
+  }
   // Hidden money controls cannot be clicked; exercise visible read-only controls.
   for (const p of [a,b]) {
    for (const sel of ['#dadBtn','.btn-save','.btn-bond','.btn-spend','.reward-btn']) assert.equal(await p.locator(sel+':visible').count(),0);
@@ -62,17 +90,20 @@ const crypto = require('node:crypto');
    await p.locator('.rng').first().click(); await p.locator('.btn-expand').click(); await p.locator('.graph-close').click();
    await p.locator('.btn-history').click(); await p.locator('#modal .close').click();
   }
-  for (const route of ['/', '/static/app.js', '/api/admin/gift', '/api/save', '/api/spend', '/unknown']) {
+  const mutators=['/api/collect','/api/save','/api/withdraw','/api/bond','/api/spend','/api/admin/verify','/api/admin/pin','/api/admin/gift','/api/admin/kid','/api/admin/kid/update','/api/admin/kid/allowance','/api/admin/tx/delete','/api/admin/tx/edit','/api/admin/rates','/api/admin/fastforward'];
+  for (const route of ['/', '/static/app.js', ...mutators, '/unknown']) {
    const r=await fetch(process.env.DRIVER_URL+route,{method:'POST',headers:{'x-spike-family':F,'x-spike-token':ta[0]},body:'{}'});
    assert.equal(r.status,405,'internal dashboard '+route);
   }
-  for (const route of ['/api/admin/gift','/api/save','/api/spend','/api/withdraw','/api/collect','/api/bond','/api/unsupported','/anything']) {
+  for (const route of [...mutators,'/api/unsupported','/anything']) {
    const r=await a.request.post(process.env.BASE_URL+route,{headers:{'x-spike-family':F,'x-spike-token':ta[0]},data:{kid_id:1,amount_cents:500,note:'forbidden'}});
    assert.equal(r.status(),405,route);
   }
   for (const method of ['PUT','PATCH','DELETE']) {
    const r=await a.request.fetch(process.env.BASE_URL+'/api/save',{method,data:{kid_id:1,amount_cents:100}}); assert.equal(r.status(),405);
   }
+  const deniedWrite=await a.request.post(process.env.BASE_URL+'/api/admin/gift',{headers:{'x-spike-family':G,'x-spike-token':ta[0]},data:{kid_id:1,amount_cents:900,note:'wrong'}}); assert.equal(deniedWrite.status(),405);
+  assert.deepEqual(await Promise.all([snapshot(F),snapshot(G)]),beforeAll);
   const after=await a.evaluate(()=>Promise.all([api('/api/state'),api('/api/transactions?kid_id=1')]));
   for (const key of ['wallet_cents','savings_cents','owned_cents','history']) assert.deepEqual(after[0].kids[0][key],before[0].kids[0][key]);
   assert.deepEqual(after[1].transactions,before[1].transactions);
@@ -107,9 +138,25 @@ const crypto = require('node:crypto');
   const newerRenders=await b.evaluate(()=>renders);
   releaseOld(); await b.evaluate(()=>oldRefresh);
   assert.equal(await b.evaluate(()=>renders),newerRenders);
+  // An older 500 from the real reload path must not overwrite newer success.
+  let releaseFailure, failureSeen;
+  const failureGate=new Promise(r=>releaseFailure=r), gotFailure=new Promise(r=>failureSeen=r);
+  await b.route('**/api/state',async route=>{failureSeen(); await failureGate; await route.fulfill({status:500,body:'unavailable'});},{times:1});
+  await b.evaluate(()=>{window.beforeFailureRenders=renders; document.dispatchEvent(new Event('visibilitychange'));});
+  await gotFailure;
+  const finished=b.waitForResponse(r=>r.url().endsWith('/api/state') && r.status()===200);
+  await b.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
+  await finished;
+  await b.waitForFunction(()=>renders>beforeFailureRenders && document.querySelector('#spike-status').textContent==='connected');
+  const failedResponse=b.waitForResponse(r=>r.url().endsWith('/api/state') && r.status()===500);
+  releaseFailure(); await failedResponse;
+  await quiet();
+  assert.equal(await b.locator('#spike-status').textContent(),'connected');
+  await dashboard(b,6,1,7);
   // Offline peer misses a real commit, then gets an authorized fresh snapshot.
   await b.evaluate(()=>sockets.at(-1).close());
   await b.waitForFunction(()=>document.querySelector('#kids').children.length===0);
+  assert.equal(await b.locator('#spike-token').inputValue(),ta[1]);
   await mutate(F,ta[0],'spend',[1,50,'driver spend']);
   await dashboard(a,5.5,1,6.5);
   await a.locator('.btn-history').click();
@@ -120,7 +167,6 @@ const crypto = require('node:crypto');
   await b.reload(); await connect(b,F,ta[1]); await dashboard(b,5.5,1,6.5);
   const denied=await a.request.get(process.env.BASE_URL+'/api/state',{headers:{'x-spike-family':G,'x-spike-token':ta[0]}}); assert.equal(denied.status(),403);
   const deniedDriver=await fetch(process.env.DRIVER_URL+'/__test/mutate',{method:'POST',headers:{'content-type':'application/json','x-test-secret':process.env.TEST_SECRET},body:JSON.stringify({family:G,token:ta[0],operation:crypto.randomUUID(),action:'gift',args:[1,900,'wrong']})}); assert.equal(deniedDriver.status,403);
-  const deniedWrite=await a.request.post(process.env.BASE_URL+'/api/admin/gift',{headers:{'x-spike-family':G,'x-spike-token':ta[0],'x-spike-operation':'12345678-1234-4123-8123-123456789abc'},data:{kid_id:1,amount_cents:900,note:'wrong'}}); assert.equal(deniedWrite.status(),405);
   assert.equal(await b.evaluate(([f,t])=>new Promise(resolve=>{const w=new WebSocket(`ws://${location.host}/__spike/socket?family=${f}&token=${t}`); w.onopen=()=>{w.close();resolve(false)}; w.onerror=()=>resolve(true)}),[G,ta[0]]),true);
   // Hold a real A state response; switch to B then deliver it and captured A callbacks.
   let release, captured;
@@ -129,6 +175,8 @@ const crypto = require('node:crypto');
   const received = new Promise(r=>captured=r);
   await b.evaluate(()=>{const live = sockets.findLast(s => s.readyState === WebSocket.OPEN && typeof s.onmessage === 'function'); if (!live) throw Error('active family socket missing'); window.oldMessage=live.onmessage; window.oldClose=live.onclose; window.held=refresh().catch(e=>e.name);});
   await received;
+  await b.locator('#spike-family').selectOption(G);
+  assert.equal(await b.locator('#spike-token').inputValue(),'');
   await connect(b,G,tb[0]); await dashboard(b,5,0,5);
   release(); assert.equal(await b.evaluate(()=>held),'AbortError');
   await b.evaluate(()=>{oldMessage({data:'{"type":"invalidate"}'}); oldClose();});
@@ -148,6 +196,7 @@ const crypto = require('node:crypto');
   assert.equal(await a.locator('#kids').textContent(),'');
   assert.equal(await a.locator('#modal').evaluate(x=>x.classList.contains('hidden')),true);
   await b.locator('#spike-logout').click();
+  assert.equal(await b.locator('#spike-token').inputValue(),'');
   // A visible-tab resume reconciles a deliberately dropped push with polling off.
   await Promise.all([connect(a,F,ta[0]),connect(b,F,ta[1])]);
   await b.evaluate(()=>{sockets.findLast(s=>s.readyState===WebSocket.OPEN).onmessage=null;});

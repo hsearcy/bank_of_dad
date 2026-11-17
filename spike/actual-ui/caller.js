@@ -19,6 +19,11 @@ export default {async fetch(request, env) {
         if (!validFamily(family)) throw Error('family');
         return Response.json(await env.BANK.get(env.BANK.idFromName(family)).fixture_setup(family));
       }
+      if (u.pathname === '/__test/snapshot') {
+        const {family} = await request.json();
+        if (!validFamily(family)) throw Error('family');
+        return Response.json(await env.BANK.get(env.BANK.idFromName(family)).fixture_snapshot());
+      }
       if (u.pathname === '/__test/mutate') {
         const {family,token,operation,action,args} = await request.json();
         if (!validFamily(family) || !token || !operation || !Array.isArray(args)) throw Error('test input');

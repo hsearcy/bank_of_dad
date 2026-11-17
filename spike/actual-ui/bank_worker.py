@@ -4,6 +4,7 @@ from js import WebSocketPair
 from pyodide.ffi import create_proxy
 from hosted.object import FamilyBank, _rpc_result
 import bank
+import json
 from dashboard_contract import cfg
 
 OWNER = {'issuer': 'https://synthetic.invalid', 'subject': 'owner'}
@@ -21,6 +22,21 @@ class SyntheticLiveBank(FamilyBank):
         two = a.issue_grant_privileged(family, OWNER, 3600)
         a.mutate(family, one, 'fixture-kid', 'add_kid', ['Synthetic child', '🦊', '#123456'])
         return _rpc_result([one, two])
+
+    async def fixture_snapshot(self):
+        # Test-driver only: capture every table (including sqlite_sequence) and
+        # the entire catalog in distinct namespaces, with deterministic rows.
+        def snapshot(c):
+            schema = c.execute("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name").fetchall()
+            result = {"schema": schema, "tables": {}}
+            for item in schema:
+                if item["type"] == "table":
+                    name = item["name"]
+                    quoted = '"' + name.replace('"', '""') + '"'
+                    rows = c.execute("SELECT * FROM " + quoted).fetchall()
+                    result["tables"][name] = sorted(rows, key=lambda row: json.dumps(row, sort_keys=True))
+            return result
+        return _rpc_result(self._authorization.bank._transaction(snapshot))
 
     async def fixture_dashboard(self, family, token):
         a = self._authorization
