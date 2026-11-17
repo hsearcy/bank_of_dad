@@ -60,6 +60,39 @@
     if (!response.ok || (result === null && path !== '/api/pending') || (result !== null && (typeof result !== 'object' || Array.isArray(result)))) throw Error('Synthetic request failed or unsupported.');
     return result;
   }
+  // Match FamilyService._validate's canonical positional payload and the current
+  // bank action return contracts. Fail closed if either side evolves separately.
+  const text = value => typeof value === 'string' && Array.from(value).length <= 500;
+  const positiveInt = value => Number.isSafeInteger(value) && value > 0 && value <= 1_000_000_000;
+  function validPending(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        Object.keys(value).sort().join(',') !== 'acknowledged,operation_id,request,result' ||
+        typeof value.operation_id !== 'string' || !value.operation_id || Array.from(value.operation_id).length > 200 ||
+        value.acknowledged !== false || !Array.isArray(value.request) || value.request.length !== 2) return false;
+    const [action, args] = value.request;
+    if (typeof action !== 'string' || !Array.isArray(args)) return false;
+    let validArgs = false, validResult = false;
+    switch (action) {
+      case 'add_kid':
+        validArgs = args.length === 3 && args.every(text) && args[0].trim().length > 0;
+        validResult = value.result === true;
+        break;
+      case 'gift':
+        validArgs = args.length === 3 && positiveInt(args[0]) && positiveInt(args[1]) && text(args[2]);
+        validResult = typeof value.result === 'boolean';
+        break;
+      case 'save': case 'withdraw': case 'spend': case 'invest':
+        validArgs = action === 'invest' ? args.length === 3 && positiveInt(args[0]) && text(args[1]) && positiveInt(args[2]) :
+          args.length === (action === 'spend' ? 3 : 2) && positiveInt(args[0]) && positiveInt(args[1]) && (action !== 'spend' || text(args[2]));
+        validResult = Array.isArray(value.result) && value.result.length === 2 && typeof value.result[0] === 'boolean' && text(value.result[1]);
+        break;
+      case 'collect_rewards':
+        validArgs = args.length === 2 && positiveInt(args[0]) && ['all','allowance','interest','invest'].includes(args[1]);
+        validResult = Number.isSafeInteger(value.result) && value.result >= 0;
+        break;
+    }
+    return validArgs && validResult;
+  }
   async function refreshPending() {
     const g = epoch, s = scope, serial = ++pendingSerial;
     pendingText('Checking; pending status unknown.');
@@ -67,7 +100,7 @@
       const value = await request('/api/pending');
       if (g !== epoch || s !== scope || serial !== pendingSerial) return;
       if (value === null) {pendingText('No pending operation.'); return;}
-      if (typeof value.operation_id !== 'string' || !value.request || typeof value.request !== 'object' || !Object.hasOwn(value, 'result') || value.acknowledged !== false) throw Error('Invalid pending response');
+      if (!validPending(value)) throw Error('Invalid pending response');
       pendingText('Operation ID: ' + value.operation_id + '\nAction and payload: ' + JSON.stringify(value.request, null, 2) + '\nResult: ' + JSON.stringify(value.result, null, 2));
     } catch (_) {
       if (g === epoch && s === scope && serial === pendingSerial) pendingText('Pending status unknown — unable to retrieve.');

@@ -6,6 +6,12 @@ Dashboard GETs use synthetic `x-spike-family` and `x-spike-token` headers: `/api
 
 Each newly committed operation, including a false or no-op result that does **not** advance domain revision, sends `{"type":"invalidate"}` to all still-authorized sockets in that family; the first committed exact-result acknowledgment sends another. Replays and repeated acknowledgments send none. The synthetic client refetches **both** state and pending on connection, every invalidation, visible resume and the 60-second safety interval, independently of domain revision. It renders the request and result as text only; it has no acknowledgment or review action. Errors show unknown rather than absence. Pending remains principal-scoped across different grants; invalidations disclose activity timing to other authorized family members and need a production privacy decision. Sockets are reauthorized on fanout. Delivery is best effort, not an outbox: disconnect or crash can lose events, and browser timers may be delayed or paused.
 
+## Validation and authorization tradeoffs
+
+Only an actual JSON `null` response means no pending operation. An object must have exactly the four recovery fields, a nonempty bounded operation ID, `acknowledged: false`, a canonical supported action and argument list, and the corresponding current bank result shape. Boolean false for `gift` and integer zero for `collect_rewards` are valid. No currently supported mutation returns a null result; it is rejected as unknown, not treated as no pending. Unknown fields, unsupported future actions or result shapes, malformed JSON and invalid types show unknown until the client contract is updated. This intentionally trades availability for safety and is not proof of server integrity.
+
+Any genuine 401 or 403 from the active family/grant context disconnects, even if that request started before a newer successful read. Concurrent request start/response order does not establish the server's authorization order, and the denial may signal revocation. This fail-closed policy can disconnect a still-authorized client because of an older denial. Responses from a previous family or grant context are ignored, including denials. This fixture cannot prove production revocation semantics.
+
 ## Verify locally
 
 Install pinned test dependencies with `npm ci --prefix tests_hosted`, then run:
