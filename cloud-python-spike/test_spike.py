@@ -18,6 +18,7 @@ ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
 import bank, db, config  # the repository originals, not spike copies
 from fixtures import LEGACY
+from scenario import perform
 
 bank.time.time = lambda: 1700000000.0
 
@@ -145,7 +146,7 @@ def main():
         src.mkdir()
         for name in ('bank.py', 'db.py', 'config.py'):
             shutil.copyfile(ROOT / name, src / name)
-        for name in ('worker.py', 'fixtures.py', 'wrangler.jsonc'):
+        for name in ('worker.py', 'fixtures.py', 'scenario.py', 'wrangler.jsonc'):
             shutil.copyfile(HERE / name, src / name)
         os.environ['BANK_OF_DAD_DB'] = str(base / 'forbidden.db')
         db.DB_PATH = os.environ['BANK_OF_DAD_DB']
@@ -199,10 +200,57 @@ def main():
                 assert_legacy(migrated)
                 legacy_expected = legacy_oracle()
                 assert migrated == legacy_expected, (migrated, legacy_expected)
+                # Independently initialized synthetic family; no auth is implied.
+                assert request(port, 'family-b/init')['result'] is True
+                family_b = request(port, 'family-b/read')['result']
+                c = sqlite3.connect(':memory:')
+                c.row_factory = sqlite3.Row
+                c.execute('PRAGMA foreign_keys = ON')
+                c.executescript(db.SCHEMA)
+                db._migrate(c)
+                bank.add_kid(c, 'Synthetic', '🐣', '#123456')
+                bank.gift(c, 1, 500, '  chores 🧹  ')
+                def oracle_snapshot():
+                    return {key: [dict(row) for row in c.execute(f'SELECT * FROM {table} ORDER BY {order}')]
+                            for key, table, order in [('kids', 'kids', 'id'), ('ledger', 'transactions', 'id'),
+                                                      ('history', 'history', 'id'), ('bonds', 'bonds', 'id'),
+                                                      ('settings', 'settings', 'key')]}
+                for action, fixed in [('save', [True, 'Saved!']), ('withdraw', [True, 'Done!']),
+                                      ('spend', [True, 'Spent!']), ('invest', [True, 'Locked in!']),
+                                      ('collect_invest', 0),
+                                      ('advance', None), ('pending', {'pending_allowance_cents': 600,
+                                       'pending_interest_cents': 51, 'pending_bonds_cents': 50, 'owned_cents': 875})]:
+                    actual = request(port, action)['result']
+                    reference = json.loads(json.dumps(perform(c, action)))
+                    assert actual == reference == fixed, (action, actual, reference, fixed)
+                    assert request(port, 'read')['result'] == oracle_snapshot(), action
+                    assert request(port, 'family-b/read')['result'] == family_b, action
+                before_collect = request(port, 'read')['result']
+                failed = request(port, 'fail_collect', 500)
+                assert 'injected after collect writes' in failed['error'], failed
+                assert request(port, 'read')['result'] == before_collect
+                assert request(port, 'collect')['result'] == perform(c, 'collect') == 701
+                expected = oracle_snapshot()
+                assert request(port, 'read')['result'] == expected
+                assert (expected['kids'][0]['wallet_cents'], expected['kids'][0]['savings_cents']) == (1225, 351)
+                assert [(t['kind'], t['amount_cents'], t['bond_id']) for t in expected['ledger']] == [
+                    ('gift', 500, None), ('save', 400, None), ('withdraw', 100, None),
+                    ('spend', -125, None), ('invest', 200, 1), ('allowance', 600, None),
+                    ('interest', 51, None), ('bond_payout', 250, 1)]
+                assert expected['bonds'][0]['collected'] == 1
+                assert request(port, 'collect')['result'] == perform(c, 'collect') == 0
+                assert request(port, 'read')['result'] == expected
+                assert request(port, 'family-b/read')['result'] == family_b
+                c.close()
+                print('PASS save, withdraw, spend, accrual, investment payout, rollback and family isolation', flush=True)
                 print('PASS fixed gift rows + raw SQLite parity, injected rollback, actual DO migration snapshots + concrete legacy expectations', flush=True)
                 stop(p)
                 p = None
                 p = start()
+                assert request(port, 'read')['result'] == expected
+                assert request(port, 'family-b/read')['result'] == family_b
+                assert request(port, 'family-b/gift')['result'] is True
+                assert request(port, 'family-b/read')['result'] == EXPECTED_GIFT
                 assert request(port, 'read')['result'] == expected
                 assert not (base / 'forbidden.db').exists()
                 print('PASS restart persistence and forbidden filesystem DB guard', flush=True)

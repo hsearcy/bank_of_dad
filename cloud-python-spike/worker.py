@@ -6,6 +6,7 @@ from pyodide.ffi import create_proxy
 from workers import WorkerEntrypoint, DurableObject, Response
 import bank, db
 from fixtures import LEGACY
+from scenario import perform
 
 bank.time.time = lambda: 1700000000.0
 
@@ -18,6 +19,7 @@ sqlite3.connect = forbidden
 class Cursor:
     def __init__(self, cursor):
         self.rows = cursor.toArray().to_py()
+        self.lastrowid = None
     def fetchone(self):
         return self.rows[0] if self.rows else None
     def fetchall(self):
@@ -27,13 +29,20 @@ class Cursor:
 
 class Connection:
     def __init__(self, sql, fail=False):
-        self.sql, self.fail = sql, fail
+        self.sql, self.fail, self.in_transaction = sql, fail, False
     def execute(self, statement, params=()):
-        if self.fail and statement.lstrip().startswith('INSERT INTO transactions'):
+        if self.fail == 'fail' and statement.lstrip().startswith('INSERT INTO transactions'):
             raise RuntimeError('injected after wallet update')
-        return Cursor(self.sql.exec(statement, *params))
+        if self.fail == 'fail_collect' and statement.lstrip().startswith('INSERT INTO history'):
+            raise RuntimeError('injected after collect writes')
+        result = Cursor(self.sql.exec(statement, *params))
+        if statement.lstrip().startswith('INSERT INTO bonds'):
+            result.lastrowid = self.sql.exec('SELECT last_insert_rowid() AS id').toArray().to_py()[0]['id']
+        return result
     def commit(self):
-        pass  # The enclosing DO transactionSync owns the commit.
+        if not self.in_transaction:
+            raise RuntimeError('commit outside transactionSync')
+        # The enclosing DO transactionSync owns the commit.
 
 def run_script(conn, script):
     statement = ''
@@ -63,9 +72,9 @@ class Bank(DurableObject):
         super().__init__(ctx, env)
         self.ctx = ctx
     async def fetch(self, request):
-        action = urlparse(request.url).path.strip('/')
+        action = urlparse(request.url).path.strip('/').split('/')[-1]
         storage = self.ctx.storage
-        conn = Connection(storage.sql, action == 'fail')
+        conn = Connection(storage.sql, action)
         def operation():
             if action == 'init':
                 run_script(conn, db.SCHEMA)
@@ -88,13 +97,15 @@ class Bank(DurableObject):
                 raise AssertionError('disk DB guard failed')
             if action == 'read':
                 return snapshot(conn)
-            raise ValueError('unknown action')
+            return perform(conn, action)
         try:
-            if action in ('init', 'legacy', 'gift', 'fail'):
+            if action not in ('read', 'guard', 'pending'):
                 proxy = create_proxy(operation)
                 try:
+                    conn.in_transaction = True
                     result = storage.transactionSync(proxy)
                 finally:
+                    conn.in_transaction = False
                     proxy.destroy()
             else:
                 result = operation()
@@ -104,7 +115,8 @@ class Bank(DurableObject):
 
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
-        action = urlparse(request.url).path.strip('/')
-        name = 'legacy-proof' if action == 'legacy' else 'gift-proof'
+        parts = urlparse(request.url).path.strip('/').split('/')
+        action = parts[-1]
+        name = parts[0] if len(parts) == 2 else ('legacy-proof' if action == 'legacy' else 'gift-proof')
         stub = self.env.BANK.get(self.env.BANK.idFromName(name))
         return await stub.fetch(request.url)

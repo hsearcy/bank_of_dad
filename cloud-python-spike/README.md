@@ -30,15 +30,26 @@ host failure cannot guarantee cleanup.
 
 ## Coverage and boundary
 
-- The real `db.SCHEMA`, `db._migrate`, `bank.add_kid`, and `bank.gift` execute
-  through a deliberately small adapter for DO SQL cursor rows, bound
-  parameters and transaction ownership (`commit` is intentionally a no-op
-  inside `transactionSync`). A fixed synthetic clock enables exact comparison.
+- The real `db.SCHEMA`, `db._migrate`, `bank.add_kid`, `bank.gift`, savings
+  deposit and withdrawal, spend, bond purchase, pending state, time advance,
+  and reward collection execute through a small DO SQL adapter. `commit` is
+  allowed as a no-op only inside the outer `transactionSync`; the bond INSERT
+  cursor obtains its ID with SQLite `last_insert_rowid()` in that transaction.
+  A frozen clock and the original fast-forward setting make results repeatable.
+- Each step is compared with an in-memory standard SQLite oracle using the
+  same unchanged source, and independent fixed results check return values,
+  pending rewards, final balances and ledger. A 200-cent 30-day bond cannot
+  be collected early, then pays 250 cents; 30 days produce 600 cents allowance
+  and 51 cents interest in this scenario. Collection is idempotent on retry.
+- Two named synthetic DOs maintain isolated rows across writes, a failed
+  collection, and a full runtime restart; both directions are exercised.
+  Naming is test routing, **not authentication or authorization**.
 - The test compares full raw kids, transaction (including kid_id and bond_id),
   history, bonds and settings rows with SQLite and fixed synthetic expected
   gift values independent of the shared bank implementation. A thrown exception
   after the wallet update and before the ledger insertion must roll those rows
-  back completely.
+  back completely. A second failure after collection ledger, balance and bond
+  updates but before history insertion must also roll back all rows.
 - A separate synthetic legacy schema with existing rows captures actual DO
   schema and row snapshots before migration and after each of two calls; the
   second must leave the first unchanged. Fixed expected columns, defaults, and
@@ -53,6 +64,7 @@ host failure cannot guarantee cleanup.
 This proves only the exercised local slice. There is **no authentication,
 authorization, deployed service, production readiness, concurrent-client test,
 full adapter/transaction/API parity, or migration of real data**. Other bank
-operations, transaction semantics, platform limits, upgrades and browser
-behavior remain unverified. The worker's monkeypatches and test routes are
+operations, arbitrary transaction semantics, platform limits, upgrades and browser
+behavior remain unverified. The adapter implements `lastrowid` only for the
+exercised bond INSERT, not generally. The worker's monkeypatches and test routes are
 not production patterns.
