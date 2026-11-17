@@ -71,7 +71,7 @@ async function refresh() {
     if (!accepted) return false;
   }
   STATE = state;
-  SERVER_NOW = STATE.server_now || Date.now() / 1000;
+  SERVER_NOW = STATE.server_now ?? Date.now() / 1000;
   FETCH_AT = Date.now() / 1000;
   render();
 }

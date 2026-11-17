@@ -15,7 +15,25 @@ const crypto = require('node:crypto');
   for (const [i,p] of [a,b].entries()) {
    p.on('pageerror',e=>errors.push(e.message));
    p.on('websocket',ws=>ws.on('framereceived',e=>frames[i].push(e.payload)));
-   await p.addInitScript(() => {window.__BOD_SYNTHETIC_HANDSHAKE_MS__=1000; const Real = WebSocket; window.sockets=[]; window.WebSocket=class extends Real {constructor(...args){super(...args); sockets.push(this);}};});
+   await p.addInitScript(() => {
+    window.__BOD_SYNTHETIC_HANDSHAKE_MS__=1000;
+    const realSet=window.setTimeout, realClear=window.clearTimeout;
+    window.handshakes=[];
+    window.setTimeout=(fn,ms,...args)=>{
+     if (ms===1000 && new Error().stack.includes('openSocket')) {
+      const record={fired:false,cleared:false}; handshakes.push(record);
+      const id=realSet(()=>{record.fired=true; fn();},ms,...args); record.id=id; return id;
+     }
+     return realSet(fn,ms,...args);
+    };
+    window.clearTimeout=id=>{const record=handshakes.find(x=>x.id===id); if(record) record.cleared=true; return realClear(id);};
+    let fixture;
+    Object.defineProperty(window,'__BOD_SYNTHETIC_SPIKE__',{configurable:true,get:()=>fixture,set:value=>{
+     fixture=value; const attach=value.attach;
+     value.attach=hooks=>attach({...hooks,refresh:()=>{const p=hooks.refresh(); window.lastHookRefresh=p; return p;}});
+    }});
+    const Real = WebSocket; window.sockets=[]; window.WebSocket=class extends Real {constructor(...args){super(...args); sockets.push(this);}};
+   });
    await p.goto(process.env.BASE_URL);
   }
   // The production template differs only by the additional fixture script.
@@ -55,12 +73,23 @@ const crypto = require('node:crypto');
    await p.waitForFunction(([w,s,t])=>document.querySelector('.coins')?.textContent.includes(`$${w.toFixed(2)} to spend`) && document.querySelector('.s-val')?.textContent===`$${s.toFixed(2)}` && document.querySelector('.big')?.textContent===`$${t.toFixed(2)}`,[wallet,savings,total]);
    assert.equal(await p.locator('.name').textContent(),'Synthetic child');
   };
+  // Intercept an authorized real DO snapshot in a fresh browser view with exact epoch zero.
+  const zero=await browsers[0].newPage();
+  await zero.route('**/api/state',async route=>{const response=await route.fetch(), body=await response.json(); body.server_now=0; Object.assign(body.kids[0],{allowance_enabled:true,allowance_cents:100,pending_allowance_cents:0,next_allowance_ts:3600}); await route.fulfill({json:body});});
+  await zero.goto(process.env.BASE_URL); await connect(zero,F,ta[0]);
+  assert.equal(await zero.evaluate(()=>STATE.server_now),0);
+  assert.equal(await zero.evaluate(()=>SERVER_NOW),0);
+  assert.match(await zero.locator('.na-when').textContent(),/^in (59|60) min$/);
+  const zeroTime=await zero.evaluate(()=>serverNow()); await new Promise(r=>setTimeout(r,1100));
+  const advanced=await zero.evaluate(()=>serverNow()); assert.ok(zeroTime>=0 && zeroTime<5 && advanced>zeroTime+0.8 && advanced<5);
+  await zero.close();
   // A socket opening is not proof the initial authorized snapshot succeeded.
   await a.route('**/api/state', route=>route.fulfill({status:500,contentType:'text/plain',body:'unavailable'}), {times:1});
   await a.locator('#spike-token').fill(ta[0]); await a.locator('#spike-connect').click();
   await a.waitForFunction(()=>document.querySelector('#spike-status').textContent==='snapshot failed');
   assert.equal(await a.locator('#kids').textContent(),'');
   await Promise.all([connect(a,F,ta[0]),connect(b,F,ta[1])]);
+  for (const p of [a,b]) assert.deepEqual(await p.evaluate(()=>{const t=handshakes.at(-1); return {cleared:t?.cleared,fired:t?.fired};}),{cleared:true,fired:false},'successful open clears handshake timer');
   assert.match(await a.evaluate(()=>api('/api/not-supported').then(()=>'',e=>e.message)), /failed or unsupported/);
   assert.match(await a.evaluate(()=>api('/api/not-supported',{x:1}).then(()=>'',e=>e.message)), /Read-only/);
   await Promise.all([a,b].map(p=>dashboard(p,5,0,5)));
@@ -291,7 +320,7 @@ const crypto = require('node:crypto');
   releaseLaterNow(); await b.evaluate(()=>laterNowRequest);
   assert.ok(await b.evaluate(()=>STATE.server_now)>baselineNow);
   assert.equal(await b.evaluate(()=>STATE.revision),baselineRevision);
-  // Deliver high then low frames while the first resulting snapshot is held.
+  // Simulate handler delivery, not reordered WebSocket network frames.
   let releaseFrame, sawFrame, frameRequests=0;
   const frameGate=new Promise(r=>releaseFrame=r), frameSeen=new Promise(r=>sawFrame=r);
   const frameRoute=async route=>{frameRequests++; if(frameRequests===1){sawFrame(); await frameGate;} await route.continue();};
@@ -302,16 +331,22 @@ const crypto = require('node:crypto');
   await b.waitForFunction(()=>true); releaseFrame(); await quiet();
   assert.ok(frameRequests>=2); assert.equal(await b.evaluate(()=>STATE.revision),later.revision);
   await b.unroute('**/api/state',frameRoute);
-  // An old socket's failed reload must not damage the replacement view.
-  let releaseSocketFailure, sawSocketFailure;
+  // Hold replacement preflight so no newer refresh can suppress the old error by serial.
+  // Await the actual hook rejection: reload's socket-identity guard must preserve reconnecting.
+  let releaseSocketFailure, sawSocketFailure, releaseReplacement, sawReplacement, socketCalls=0;
   const socketFailureGate=new Promise(r=>releaseSocketFailure=r), socketFailureSeen=new Promise(r=>sawSocketFailure=r);
-  await b.route('**/api/state',async route=>{sawSocketFailure(); await socketFailureGate; await route.fulfill({status:500,body:'unavailable'});},{times:1});
+  const replacementGate=new Promise(r=>releaseReplacement=r), replacementSeen=new Promise(r=>sawReplacement=r);
+  const socketRoute=async route=>{if (++socketCalls===1) {sawSocketFailure(); await socketFailureGate; await route.fulfill({status:500,body:'unavailable'});} else {sawReplacement(); await replacementGate; await route.continue();}};
+  await b.route('**/api/state',socketRoute);
   await b.evaluate(()=>document.dispatchEvent(new Event('visibilitychange'))); await socketFailureSeen;
-  await b.evaluate(()=>sockets.findLast(s=>s.readyState===WebSocket.OPEN).close());
-  await b.waitForFunction(()=>document.querySelector('#spike-status').textContent==='reconnecting');
-  await b.waitForFunction(()=>document.querySelector('#spike-status').textContent==='connected');
-  releaseSocketFailure(); await quiet();
-  assert.equal(await b.locator('#spike-status').textContent(),'connected'); await dashboard(b,8.25,1,9.25);
+  await b.evaluate(()=>{window.oldHookResult=lastHookRefresh.then(()=> 'resolved', e=>e.message); sockets.findLast(s=>s.readyState===WebSocket.OPEN).close();});
+  await b.waitForFunction(()=>document.querySelector('#spike-status').textContent==='reconnecting'); await replacementSeen;
+  releaseSocketFailure(); assert.match(await b.evaluate(()=>oldHookResult),/failed/);
+  await b.evaluate(()=>new Promise(r=>setTimeout(r,0)));
+  assert.equal(await b.locator('#spike-status').textContent(),'reconnecting');
+  releaseReplacement();
+  await b.waitForFunction(()=>document.querySelector('#spike-status').textContent==='connected'); await dashboard(b,8.25,1,9.25);
+  await b.unroute('**/api/state',socketRoute);
   // Intentional offline state cancels retries until online resumes.
   await b.evaluate(()=>{Object.defineProperty(navigator,'onLine',{configurable:true,value:false}); window.dispatchEvent(new Event('offline'));});
   assert.equal(await b.locator('#spike-status').textContent(),'offline');
@@ -364,14 +399,18 @@ const crypto = require('node:crypto');
   await b.evaluate(()=>{window.RealWS=WebSocket; window.stuck=[]; window.WebSocket=class {static OPEN=1; constructor(){this.readyState=0; stuck.push(this);} close(){this.closed=true; this.readyState=3;}};});
   await b.locator('#spike-token').fill(ta[1]); await b.locator('#spike-connect').click();
   await b.waitForFunction(()=>stuck.length>=2 && stuck[0].closed,{timeout:5000});
+  assert.equal(await b.evaluate(()=>stuck.length),2,'one timeout creates exactly one retry socket');
+  assert.deepEqual(await b.evaluate(()=>{const t=handshakes.at(-2); return {fired:t.fired,cleared:t.cleared};}),{fired:true,cleared:true},'timeout fires once and clears its timer');
   assert.equal(await b.locator('#spike-status').textContent(),'reconnecting');
   await b.locator('#spike-logout').click();
+  assert.deepEqual(await b.evaluate(()=>{const t=handshakes.at(-1); return {fired:t.fired,cleared:t.cleared};}),{fired:false,cleared:true},'logout clears pending handshake');
   const stuckCount=await b.evaluate(()=>stuck.length);
   assert.equal(await b.evaluate(()=>stuck.at(-1).closed),true);
   await new Promise(r=>setTimeout(r,1300)); assert.equal(await b.evaluate(()=>stuck.length),stuckCount);
   await b.locator('#spike-token').fill(ta[1]); await b.locator('#spike-connect').click();
   const switchStuckCount=await b.evaluate(()=>stuck.length);
   await b.locator('#spike-family').selectOption(G);
+  assert.deepEqual(await b.evaluate(()=>{const t=handshakes.at(-1); return {fired:t.fired,cleared:t.cleared};}),{fired:false,cleared:true},'switch clears pending handshake');
   assert.equal(await b.evaluate(()=>stuck.at(-1).closed),true);
   await new Promise(r=>setTimeout(r,1300)); assert.equal(await b.evaluate(()=>stuck.length),switchStuckCount);
   await b.evaluate(()=>{window.WebSocket=window.RealWS;});
