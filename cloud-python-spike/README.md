@@ -23,10 +23,29 @@ a disposable directory at runtime because Wrangler bundles Python modules from
 its worker directory. They are never maintained as spike copies. The SQLite
 oracle imports those same root modules directly. A fresh temporary directory
 under `TMPDIR` contains all state, logs, and staged source; it is deleted on
-normal completion. Wrangler binds only loopback and is stopped with its process
-group in a finally block. Persisted state and logs are outside its watched
-source directory to prevent reload loops. Ctrl-C also runs cleanup; SIGKILL or
-host failure cannot guarantee cleanup.
+normal completion. This Linux harness starts each Wrangler in its own process
+session and waits for all non-zombie process-group members to exit before a
+restart or cleanup, escalating to SIGKILL only for that group. Ctrl-C also runs
+cleanup; SIGKILL or host failure cannot guarantee cleanup. It chooses a fresh
+loopback HTTP port for each start, requests an OS-assigned loopback inspector
+port (`--inspector-port 0`), and retries up to five times on reported bind
+collisions. Wrangler 4.163.0 has no `dev` control-port flag; its internal
+Miniflare listeners use dynamically assigned ports. The HTTP port selection
+still has a bind race, so readiness is checked against this start's Wrangler log
+and retries are bounded. State survives restarts only within that invocation.
+
+To repeat the parallel full-suite check (each process has its own scratch state):
+
+```sh
+for round in 1 2; do
+  TMPDIR=/home/ares/.hermes/cache/scratch python3 test_spike.py & a=$!
+  TMPDIR=/home/ares/.hermes/cache/scratch python3 test_spike.py & b=$!
+  wait "$a"; sa=$?
+  wait "$b"; sb=$?
+  printf 'round %s: %s %s\n' "$round" "$sa" "$sb"
+  [ "$sa" -eq 0 ] && [ "$sb" -eq 0 ] || break
+done
+```
 
 ## Coverage and boundary
 
