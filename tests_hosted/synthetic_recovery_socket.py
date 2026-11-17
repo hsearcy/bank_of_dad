@@ -18,6 +18,8 @@ class SyntheticRecoverySocket(DurableObject):
         self.sockets = {}
         self.serial = 0
         self.gate = 'idle'
+        self.send_failures_remaining = 0
+        self.send_failures_observed = 0
 
     async def fixture_gate(self, state=None):
         if state is not None: self.gate = state
@@ -27,7 +29,7 @@ class SyntheticRecoverySocket(DurableObject):
         family, token = request.headers.get('x-family'), request.headers.get('x-token')
         try:
             self.auth.snapshot(family, token)
-        except Exception:
+        except PermissionError:
             return Response('denied', status=403)
         client, server = WebSocketPair.new().object_values()
         server.accept()
@@ -54,7 +56,12 @@ class SyntheticRecoverySocket(DurableObject):
                 try: ws.close(1008, 'denied')
                 except Exception: pass
                 continue
-            try: ws.send('{"type":"invalidate"}')
+            try:
+                if self.send_failures_remaining:
+                    self.send_failures_remaining -= 1
+                    self.send_failures_observed += 1
+                    raise RuntimeError('synthetic socket.send failure')
+                ws.send('{"type":"invalidate"}')
             except Exception: pass
 
     async def snapshot(self, family, token):
@@ -115,6 +122,36 @@ class SyntheticRecoverySocket(DurableObject):
         a.bank._transaction(op)
         return _rpc_result(True)
 
+    async def fixture_full_snapshot(self):
+        def op(c):
+            schema = c.execute('SELECT type,name,tbl_name,rootpage,sql FROM sqlite_master ORDER BY type,name').fetchall()
+            catalog = c.execute('SELECT type,name,tbl_name,rootpage,sql, typeof(type) AS t0, typeof(name) AS t1, typeof(tbl_name) AS t2, typeof(rootpage) AS t3, typeof(sql) AS t4 FROM sqlite_master ORDER BY type,name').fetchall()
+            catalog = [{name: {'type': row['t' + str(i)], 'value': row[name]}
+                        for i, name in enumerate(('type', 'name', 'tbl_name', 'rootpage', 'sql'))}
+                       for row in catalog]
+            tables = {}
+            for row in schema:
+                if row['type'] == 'table':
+                    name = row['name']
+                    quoted = '"' + name.replace('"', '""') + '"'
+                    columns = c.execute('PRAGMA table_xinfo(' + quoted + ')').fetchall()
+                    names = [col['name'] for col in columns if col['hidden'] != 1]
+                    expressions = []
+                    for i, col in enumerate(names):
+                        q = '"' + col.replace('"', '""') + '"'
+                        expressions.extend(['CASE WHEN typeof(' + q + ")='blob' THEN hex(" + q + ') ELSE ' + q + ' END AS "v' + str(i) + '"',
+                                            'typeof(' + q + ') AS "t' + str(i) + '"'])
+                    rows = c.execute('SELECT ' + ','.join(expressions) + ' FROM ' + quoted).fetchall()
+                    tagged = [{name: {'type': row['t' + str(i)], 'value': row['v' + str(i)]}
+                               for i, name in enumerate(names)} for row in rows]
+                    tables[name] = sorted(tagged, key=lambda r: json.dumps(r, sort_keys=True))
+            return {'schema': catalog, 'tables': tables}
+        return _rpc_result(self.auth.bank._transaction(op))
+
+    async def fixture_send_fault(self, count=0):
+        self.send_failures_remaining = count
+        return _rpc_result(self.send_failures_observed)
+
     async def fixture_fault(self, method, args, prefix):
         a = self.auth
         original = a.bank.conn.execute
@@ -135,7 +172,8 @@ class SyntheticRecoverySocket(DurableObject):
                    'mutate': self.mutate, 'acknowledge': self.acknowledge,
                    'setup': self.fixture_setup, 'grant': self.fixture_grant_owner,
                    'revoke': self.fixture_revoke, 'expire': self.fixture_expire,
-                   'fault': self.fixture_fault}
+                   'fault': self.fixture_fault, 'full_snapshot': self.fixture_full_snapshot,
+                   'send_fault': self.fixture_send_fault}
         try:
             value = await methods[method](*args)
             return _rpc_result({'ok': True, 'value': json.loads(JSON.stringify(value))})
