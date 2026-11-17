@@ -44,16 +44,40 @@ def main():
                     assert req('mutate', [F, own, 'seed', 'add_kid', ['Seed']])['result'] is True
                     req('seed_allowance', [])
                     assert req('read', [F, token, 'kids', []])['result'][0]['pending_allowance_cents'] == 300
-                    cases = [('add_kid', ['Extra'], True), ('gift', [1, 100], True),
-                             ('save', [1, 10], [True, 'Saved!']), ('withdraw', [1, 1], [True, 'Done!']),
-                             ('spend', [1, 1], [True, 'Spent!']), ('invest', [1, '1mo', 4], [True, 'Locked in!']),
-                             ('collect_rewards', [1, 'allowance'], 300)]
-                    for action, args, expected in cases:
+                    # Expected rows are (kid, net worth, wallet, savings, investment).
+                    # Compare a multiset: wall-clock timestamps can tie or change, and
+                    # neither timestamps nor SQLite row ordering define action order.
+                    cases = [
+                        ('add_kid', ['Extra'], True, None),
+                        ('gift', [1, 100], True, (1, 600, 600, 0, 0)),
+                        ('save', [1, 10], [True, 'Saved!'], (1, 600, 590, 10, 0)),
+                        ('withdraw', [1, 1], [True, 'Done!'], (1, 600, 591, 9, 0)),
+                        ('spend', [1, 1], [True, 'Spent!'], (1, 599, 590, 9, 0)),
+                        ('invest', [1, '1mo', 4], [True, 'Locked in!'], (1, 599, 586, 9, 4)),
+                        ('collect_rewards', [1, 'allowance'], 300, (1, 899, 886, 9, 4)),
+                    ]
+                    history = []
+                    assert req('snapshot', [])['result']['history'] == [], (role, 'seed history')
+                    for action, args, expected, history_row in cases:
                         request = [F, token, action, action, args]
                         assert req('mutate', request)['result'] == expected, (role, action)
                         state = req('snapshot', [])['result']
+                        if history_row is not None:
+                            history.append(history_row)
+                        actual_history = sorted(
+                            (h['kid_id'], h['networth_cents'], h['wallet_cents'],
+                             h['savings_cents'], h['invest_cents']) for h in state['history'])
+                        assert actual_history == sorted(history), (role, action, actual_history, history)
                         assert req('mutate', request)['result'] == expected, (role, action, 'retry')
                         assert req('snapshot', [])['result'] == state, (role, action, 'state')
+                    # A fresh zero-reward collection intentionally records no history.
+                    before_zero = req('snapshot', [])['result']
+                    zero = [F, token, 'collect-zero', 'collect_rewards', [1, 'allowance']]
+                    assert req('mutate', zero)['result'] == 0
+                    after_zero = req('snapshot', [])['result']
+                    assert after_zero['history'] == before_zero['history'], (role, 'zero history')
+                    assert req('mutate', zero)['result'] == 0
+                    assert req('snapshot', [])['result'] == after_zero, (role, 'zero retry')
                     state = req('snapshot', [])['result']
                     kid = req('read', [F, token, 'kids', []])['result'][0]
                     assert (kid['wallet_cents'], kid['savings_cents'], kid['invest_cents']) == (886, 9, 4)
