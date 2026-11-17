@@ -45,7 +45,7 @@ export class Family extends DurableObject {
 
 export class Coordinator extends DurableObject {
   constructor(ctx, env) {
-    super(ctx, env); this.sql=ctx.storage.sql;
+    super(ctx, env); this.sql=ctx.storage.sql; this.testGates=new Map();
     this.sql.exec('CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, expiry INTEGER NOT NULL, state TEXT NOT NULL, generation INTEGER NOT NULL)');
     this.sql.exec('CREATE TABLE IF NOT EXISTS targets (session TEXT NOT NULL, family TEXT NOT NULL, ack INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(session,family))');
   }
@@ -54,6 +54,12 @@ export class Coordinator extends DurableObject {
     try {
       const b=await req.json(); id(b.session);
       const tx = fn => this.ctx.storage.transactionSync(fn);
+      // Synthetic-only scheduling gate, to observe an overlapping retry deterministically.
+      if (b.action === 'test-gate-status' || b.action === 'test-gate-release') {
+        id(b.family); const key=JSON.stringify([b.session,b.family]); const gate=this.testGates.get(key);
+        if (b.action === 'test-gate-status') return response({waiting:!!gate});
+        if (!gate) deny('no gate'); this.testGates.delete(key); gate(); return response({ok:true});
+      }
       if (b.action === 'issue') {
         num(b.expiry); num(b.now); if (b.expiry <= b.now) deny('expired');
         tx(() => { if (one(this.sql,'SELECT id FROM sessions WHERE id=?',b.session)) deny('session exists'); this.sql.exec('INSERT INTO sessions VALUES (?, ?, ?, 0)',b.session,b.expiry,'active'); });
@@ -89,29 +95,45 @@ export class Coordinator extends DurableObject {
       }
       if (b.action === 'retry') {
         // Faults affect transport only; there is never an await within transactionSync.
-        id(b.family); if (!['none','unreachable','lost','rejected','stale'].includes(b.fault)) deny('bad fault');
+        id(b.family); if (!['none','unreachable','lost','rejected','stale','stale-held'].includes(b.fault)) deny('bad fault');
         const snapshot=tx(() => {
           const s=one(this.sql,'SELECT * FROM sessions WHERE id=?',b.session);
           const t=one(this.sql,'SELECT * FROM targets WHERE session=? AND family=?',b.session,b.family);
           if (!s || !t || s.state === 'active') deny('denied');
           return {gen:s.generation, ack:t.ack};
         });
-        if (!snapshot.ack) {
-          if (b.fault === 'unreachable') return response({pending:true});
+        let attempt_reason;
+        if (!snapshot.ack && b.fault === 'unreachable') attempt_reason = 'unreachable';
+        else if (!snapshot.ack) {
           let result;
           try {
             result=await send(this.family(b.family), {action:'fence',session:b.session,family:b.family,gen:snapshot.gen},
               b.fault === 'rejected' ? '/reject-test-rpc' : '/');
-          } catch (_) { return response({pending:true, reason:'rpc failed'}); }
-          if (b.fault === 'stale') result = {ack:snapshot.gen - 1};
-          if (result.ack !== snapshot.gen) return response({pending:true, reason:'stale ack'});
-          if (b.fault === 'lost') return response({pending:true});
-          tx(() => {
-            this.sql.exec('UPDATE targets SET ack=1 WHERE session=? AND family=?',b.session,b.family);
-            this.sql.exec("UPDATE sessions SET state='complete' WHERE id=? AND state='revoking' AND NOT EXISTS (SELECT 1 FROM targets WHERE session=? AND ack=0)",b.session,b.session);
-          });
+          } catch (_) { attempt_reason = 'rpc failed'; }
+          if (!attempt_reason) {
+            if (b.fault === 'stale-held') {
+              const key=JSON.stringify([b.session,b.family]);
+              if (this.testGates.has(key)) deny('gate occupied');
+              await new Promise(resolve => this.testGates.set(key,resolve));
+            }
+            if (b.fault === 'stale' || b.fault === 'stale-held') result = {ack:snapshot.gen - 1};
+            if (result.ack !== snapshot.gen) attempt_reason = 'stale ack';
+            else if (b.fault === 'lost') attempt_reason = 'lost reply';
+            else tx(() => {
+              this.sql.exec('UPDATE targets SET ack=1 WHERE session=? AND family=?',b.session,b.family);
+              this.sql.exec("UPDATE sessions SET state='complete' WHERE id=? AND state='revoking' AND NOT EXISTS (SELECT 1 FROM targets WHERE session=? AND ack=0)",b.session,b.session);
+            });
+          }
         }
-        return response({pending:false});
+        // Read both fields together after every outcome, not from the pre-RPC snapshot.
+        // Another retry can have committed while this request awaited its RPC.
+        const state=tx(() => {
+          const s=one(this.sql,'SELECT state FROM sessions WHERE id=?',b.session);
+          const t=one(this.sql,'SELECT ack FROM targets WHERE session=? AND family=?',b.session,b.family);
+          return {target_acknowledged:!!t.ack, session_state:s.state};
+        });
+        if (attempt_reason) state.attempt_reason=attempt_reason;
+        return response(state);
       }
       if (b.action === 'status') {
         const s=one(this.sql,'SELECT * FROM sessions WHERE id=?',b.session); if (!s) deny('unknown');

@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 
@@ -47,24 +48,34 @@ def run():
                 assert c('status') == before
                 assert access('b')
                 c('begin'); assert c('reserve',family='c',now=1,valid=False) == {'error':'denied'}
-                assert c('retry',family='a',fault='lost')['pending'] and not access('a') and access('b')
-                assert c('retry',family='b',fault='rejected') == {'pending':True,'reason':'rpc failed'}
+                assert c('retry',family='a',fault='lost') == {'target_acknowledged':False,'session_state':'revoking','attempt_reason':'lost reply'}
+                assert not access('a') and access('b')
+                assert c('retry',family='b',fault='rejected') == {'target_acknowledged':False,'session_state':'revoking','attempt_reason':'rpc failed'}
                 assert access('b')
-                assert c('retry',family='b',fault='stale') == {'pending':True,'reason':'stale ack'}
+                assert c('retry',family='b',fault='stale') == {'target_acknowledged':False,'session_state':'revoking','attempt_reason':'stale ack'}
                 assert not access('b')
-                assert c('retry',family='b',fault='unreachable')['pending']
+                assert c('retry',family='b',fault='unreachable') == {'target_acknowledged':False,'session_state':'revoking','attempt_reason':'unreachable'}
                 s=c('status'); assert s['state']=='revoking' and [x['ack'] for x in s['targets']]==[0,0]
                 assert not call('family',ga,'a')['ok']
                 stop(p); p=None
                 p, port = start_wrangler(src, base, log, env)
-                assert c('status')['state']=='revoking' and not access('a')
-                assert not c('retry',family='a',fault='none')['pending']
                 assert c('status')['state']=='revoking'
-                assert not c('retry',family='b',fault='none')['pending']
+                # Both fences were applied before restart, despite neither coordinator ack.
+                # Replayed grants independently prove each persisted fence still rejects installation.
+                assert not access('a') and not call('family',ga,'a')['ok']
+                assert not access('b') and not call('family',gb,'b')['ok']
+                assert c('retry',family='a',fault='none') == {'target_acknowledged':True,'session_state':'revoking'}
+                assert c('retry',family='a',fault='rejected') == {'target_acknowledged':True,'session_state':'revoking'}
+                assert c('status')['state']=='revoking'
+                assert c('retry',family='b',fault='none') == {'target_acknowledged':True,'session_state':'complete'}
                 assert c('status')['state']=='complete'
                 assert not c('deliver',family='b',fault='none')['ok']
                 assert not call('family',gb,'b')['ok'] and not access('b')
-                assert not c('retry',family='b',fault='none')['pending']
+                assert c('retry',family='b',fault='none') == {'target_acknowledged':True,'session_state':'complete'}
+                stop(p); p=None
+                p, port = start_wrangler(src, base, log, env)
+                assert c('retry',family='a',fault='unreachable') == {'target_acknowledged':True,'session_state':'complete'}
+                assert c('status')['state']=='complete'
                 assert f('a','fence',gen=1)['ack']==1
                 assert f('a','fence',gen=3)['ack']==3
                 assert f('a','fence',gen=1)['ack']==1
@@ -78,6 +89,12 @@ def run():
                 assert access('a','interleave') and c('status',session='interleave')['state']=='revoking'
                 c('retry',session='interleave',family='a',fault='none')
                 assert not access('a','interleave') and c('status',session='interleave')['state']=='complete'
+                # Sequentially controlled reverse ordering: fence commits before delayed grant.
+                c('issue',session='fence-first',expiry=100,now=0)
+                gf=c('reserve',session='fence-first',family='a',now=0)['grant']
+                c('begin',session='fence-first')
+                assert c('retry',session='fence-first',family='a',fault='none') == {'target_acknowledged':True,'session_state':'complete'}
+                assert not call('family',gf,'a')['ok'] and not access('a','fence-first')
                 c('issue',session='expiry',expiry=10,now=0)
                 ge=c('reserve',session='expiry',family='a',now=9)['grant']
                 assert call('family',ge,'a')['ok']
@@ -128,7 +145,7 @@ def run():
                         g=pool.submit(call,'family',grant,'racefamily')
                         fence=pool.submit(c,'retry',session,family='racefamily',fault='none')
                         assert g.result()['ok'] in (True,False)
-                        assert fence.result()=={'pending':False}
+                        assert fence.result()=={'target_acknowledged':True,'session_state':'complete'}
                     assert not access('racefamily',session)
                     assert c('status',session=session)=={'state':'complete','generation':1,'targets':[{'family':'racefamily','ack':1}]}
                     assert not call('family',grant,'racefamily')['ok']
@@ -138,8 +155,26 @@ def run():
                 c('begin',session=session)
                 with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
                     results=list(pool.map(lambda _: c('retry',session,family='retryfamily',fault='none'),range(8)))
-                assert all(x=={'pending':False} for x in results)
+                assert all(x=={'target_acknowledged':True,'session_state':'complete'} for x in results)
                 assert c('status',session=session)=={'state':'complete','generation':1,'targets':[{'family':'retryfamily','ack':1}]}
+                # Hold a stale reply after its RPC, complete a duplicate retry, then release it.
+                # Its response must use committed state, not the pre-RPC snapshot.
+                session='overlap'; c('issue',session=session,expiry=100,now=0)
+                c('reserve',session=session,family='a',now=0); c('reserve',session=session,family='b',now=0)
+                c('begin',session=session)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                    held=pool.submit(c,'retry',session,family='a',fault='stale-held')
+                    try:
+                        deadline=time.monotonic()+10
+                        while not c('test-gate-status',session=session,family='a')['waiting']:
+                            assert time.monotonic()<deadline, 'retry never reached gate'
+                            time.sleep(.02)
+                        assert c('retry',session=session,family='a',fault='none') == {'target_acknowledged':True,'session_state':'revoking'}
+                        assert c('retry',session=session,family='b',fault='none') == {'target_acknowledged':True,'session_state':'complete'}
+                    finally:
+                        if c('test-gate-status',session=session,family='a')['waiting']:
+                            c('test-gate-release',session=session,family='a')
+                    assert held.result() == {'target_acknowledged':True,'session_state':'complete','attempt_reason':'stale ack'}
                 print('PASS real SQLite Durable Objects and cross-DO RPC: fencing, lost/unreachable replies, restart, race, expiry, invalid input')
             except BaseException:
                 log.flush(); print(Path(log.name).read_text(),file=sys.stderr); raise
