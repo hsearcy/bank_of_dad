@@ -8,15 +8,69 @@ from hosted.service import _MUTATIONS
 
 def full_snapshot(s):
     schema = list(map(tuple, s.db.execute("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name")))
+    catalog = list(map(tuple, s.db.execute("SELECT type,typeof(type),name,typeof(name),tbl_name,typeof(tbl_name),sql,typeof(sql) FROM sqlite_master ORDER BY type,name")))
     tables = {}
     for typ, name, _, _ in schema:
         if typ == 'table':
             quoted = '"' + name.replace('"', '""') + '"'
-            tables[name] = sorted(map(tuple, s.db.execute('SELECT * FROM ' + quoted)), key=repr)
-    return schema, tables
+            columns = [row[1] for row in s.db.execute('PRAGMA table_xinfo(' + quoted + ')') if row[6] != 1]
+            names = ['"' + col.replace('"', '""') + '"' for col in columns]
+            expressions = ','.join(part for col in names for part in (col, 'typeof(' + col + ')'))
+            tables[name] = sorted(map(tuple, s.db.execute('SELECT ' + expressions + ' FROM ' + quoted)), key=repr)
+    return catalog, tables
 
 
 class Matrix(unittest.TestCase):
+    def test_snapshot_detects_sqlite_type_changes(self):
+        s = Storage(); self.addCleanup(s.db.close)
+        s.db.execute('CREATE TABLE sample (v)')
+        s.db.executemany('INSERT INTO sample VALUES (?)', [(None,), (1,), ('1',), (b'1',)])
+        before = full_snapshot(s)
+        self.assertEqual({row[1] for row in before[1]['sample']}, {'null', 'integer', 'text', 'blob'})
+        s.db.execute('UPDATE sample SET v=1.0 WHERE typeof(v)=\'integer\'')
+        after = full_snapshot(s)
+        self.assertNotEqual(before, after)
+        self.assertEqual({row[1] for row in after[1]['sample']}, {'null', 'real', 'text', 'blob'})
+
+    def test_hosted_marker_corruption_denies_all_paths_without_changes(self):
+        corruptions = {
+            'missing': ['DROP TABLE hosted_schema'],
+            'empty': ['DELETE FROM hosted_schema'],
+            'zero': ['UPDATE hosted_schema SET version=0'],
+            'two': ['UPDATE hosted_schema SET version=2'],
+            'future': ['UPDATE hosted_schema SET version=999'],
+            'multiple': ['INSERT INTO hosted_schema VALUES (1)'],
+            'malformed_row': ["UPDATE hosted_schema SET version='bad'"],
+            'real_row': ['UPDATE hosted_schema SET version=1.5'],
+            'blob_row': ["UPDATE hosted_schema SET version=X'31'"],
+            'malformed_catalog': ['DROP TABLE hosted_schema', 'CREATE TABLE hosted_schema (version)', 'INSERT INTO hosted_schema VALUES (1)'],
+            'extra_catalog': ['CREATE INDEX hosted_marker_extra ON hosted_schema(version)'],
+        }
+        for corruption, statements in corruptions.items():
+            with self.subTest(corruption=corruption):
+                s = Storage(); self.addCleanup(s.db.close)
+                a = RecoveryAuthorization(s, lambda x: x, lambda: 1000)
+                a.bootstrap_privileged(F, OWNER)
+                token = a.issue_grant_privileged(F, OWNER, 100)
+                a.mutate(F, token, 'op', 'add_kid', ['Test'])
+                for sql in statements: s.db.execute(sql)
+                before = full_snapshot(s)
+                calls = {
+                    'pending': lambda: a.pending(F, token),
+                    'outcome': lambda: a.outcome(F, token, 'op'),
+                    'acknowledge': lambda: a.acknowledge(F, token, 'op', True),
+                    'replay': lambda: a.mutate(F, token, 'op', 'add_kid', ['Test']),
+                    'new_mutation': lambda: a.mutate(F, token, 'new', 'add_kid', ['New']),
+                    'read': lambda: a.read(F, token, 'kids', []),
+                    'grant': lambda: a.issue_grant_privileged(F, OWNER, 100),
+                    'membership': lambda: a.set_member(F, token, PARENT, 'parent', 'active'),
+                    'revoke': lambda: a.revoke(F, token),
+                }
+                for name, call in calls.items():
+                    with self.subTest(path=name):
+                        with self.assertRaises((RuntimeError, PermissionError)): call()
+                        self.assertEqual(full_snapshot(s), before)
+
     def assertJsonExact(self, actual, expected):
         # JSON encoding distinguishes false/0 and true/1 at every nesting level.
         self.assertEqual(json.dumps(actual, sort_keys=True, ensure_ascii=False),

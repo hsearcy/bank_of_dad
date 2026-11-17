@@ -33,6 +33,14 @@ class RecoveryAuthorization(FamilyAuthorization):
                   if r['name'].startswith('local_') or r['name'].startswith('sqlite_autoindex_local_') or r['tbl_name'].startswith('local_')}
         if actual != _RECOVERY_CATALOG:
             raise RuntimeError('invalid local authorization schema')
+        hosted_catalog = {(r['type'], r['name'], r['tbl_name'], r['sql']) for r in rows
+                          if r['name'] == 'hosted_schema' or r['tbl_name'] == 'hosted_schema'}
+        if hosted_catalog != {('table', 'hosted_schema', 'hosted_schema', 'CREATE TABLE hosted_schema (version INTEGER NOT NULL)')}:
+            raise RuntimeError('invalid hosted schema catalog')
+        hosted = c.execute('SELECT version, typeof(version) AS storage_type FROM hosted_schema').fetchall()
+        if (len(hosted) != 1 or hosted[0]['storage_type'] != 'integer'
+                or type(hosted[0]['version']) is not int or hosted[0]['version'] != 1):
+            raise RuntimeError('invalid hosted schema marker')
         marker = c.execute('SELECT version, family FROM local_auth_schema').fetchall()
         if len(marker) != 1 or type(marker[0]['version']) is not int or marker[0]['version'] != 2 or marker[0]['family'] != family:
             raise PermissionError('denied')
