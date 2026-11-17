@@ -49,7 +49,15 @@ host failure cannot guarantee cleanup.
   gift values independent of the shared bank implementation. A thrown exception
   after the wallet update and before the ledger insertion must roll those rows
   back completely. A second failure after collection ledger, balance and bond
-  updates but before history insertion must also roll back all rows.
+  updates but before history insertion must also roll back all rows. A separate
+  synthetic-only fixture instruments the disposable staged worker, not the
+  checked-in worker or application. It verifies collection's adapter `commit`
+  returned and its ledger, bond and history writes are visible inside the outer
+  transaction, then throws before `transactionSync` returns. The entire raw
+  snapshot remains unchanged immediately and after restarting Wrangler before
+  retry; pending rewards remain available and a subsequent collection succeeds
+  exactly once. This tests that specific local collection path, not every commit
+  or failure mode.
 - A separate synthetic legacy schema with existing rows captures actual DO
   schema and row snapshots before migration and after each of two calls; the
   second must leave the first unchanged. Fixed expected columns, defaults, and

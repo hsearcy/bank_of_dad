@@ -146,8 +146,19 @@ def main():
         src.mkdir()
         for name in ('bank.py', 'db.py', 'config.py'):
             shutil.copyfile(ROOT / name, src / name)
-        for name in ('worker.py', 'fixtures.py', 'scenario.py', 'wrangler.jsonc'):
+        for name in ('worker.py', 'fixtures.py', 'scenario.py', 'wrangler.jsonc', 'post_commit_fixture.py'):
             shutil.copyfile(HERE / name, src / name)
+        # Instrument only the disposable copy, never the checked-in worker or bank.
+        worker_path = src / 'worker.py'
+        worker = worker_path.read_text()
+        for old, new in [
+            ('from scenario import perform', 'from scenario import perform\nfrom post_commit_fixture import fail_after_collect_commit'),
+            ('return perform(conn, action)', "return perform(conn, 'collect' if action == 'fail_after_commit' else action)"),
+            ('proxy = create_proxy(operation)', "proxy = create_proxy(fail_after_collect_commit(operation, conn, snapshot) if action == 'fail_after_commit' else operation)"),
+        ]:
+            assert worker.count(old) == 1, old
+            worker = worker.replace(old, new)
+        worker_path.write_text(worker)
         os.environ['BANK_OF_DAD_DB'] = str(base / 'forbidden.db')
         db.DB_PATH = os.environ['BANK_OF_DAD_DB']
         os.environ['WRANGLER_SEND_METRICS'] = 'false'
@@ -229,6 +240,19 @@ def main():
                 failed = request(port, 'fail_collect', 500)
                 assert 'injected after collect writes' in failed['error'], failed
                 assert request(port, 'read')['result'] == before_collect
+                failed = request(port, 'fail_after_commit', 500)
+                assert failed['ok'] is False and failed['error'] == 'injected after inner commit returned', failed
+                assert request(port, 'read')['result'] == before_collect
+                assert request(port, 'family-b/read')['result'] == family_b
+                # Restart before any successful retry: no phantom write may persist.
+                stop(p)
+                p = None
+                p = start()
+                assert request(port, 'read')['result'] == before_collect
+                assert request(port, 'family-b/read')['result'] == family_b
+                assert request(port, 'pending')['result'] == {'pending_allowance_cents': 600,
+                    'pending_interest_cents': 51, 'pending_bonds_cents': 50, 'owned_cents': 875}
+                print('PASS post-inner-commit failure: complete snapshot unchanged immediately and after restart', flush=True)
                 assert request(port, 'collect')['result'] == perform(c, 'collect') == 701
                 expected = oracle_snapshot()
                 assert request(port, 'read')['result'] == expected
