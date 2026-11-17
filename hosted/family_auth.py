@@ -116,17 +116,29 @@ class FamilyAuthorization:
             return self.bank._read(c, action, args)
         return self.bank._transaction(op)
 
+    @_poison_on_error
+    def _mutate_in_transaction(self, c, family, token, operation_id, action, args):
+        """Internal only: authorized mutation on this service's active transaction.
+
+        The replay flag is determined inside the same transaction as the domain
+        mutation. Callers must not expose this method or suppress transaction errors.
+        """
+        if c is not self.bank.conn or not c._active:
+            raise RuntimeError('active bank transaction required')
+        issuer, subject = self._auth(c, family, token)
+        if not isinstance(operation_id, str) or not operation_id or len(operation_id) > 200: raise ValueError('valid operation ID required')
+        prior = c.execute('SELECT issuer, subject FROM local_operations WHERE operation_id=?', (operation_id,)).fetchone()
+        if prior and (prior['issuer'], prior['subject']) != (issuer, subject): raise PermissionError('denied')
+        existing = c.execute('SELECT operation_id FROM hosted_operations WHERE operation_id=?', (operation_id,)).fetchone()
+        if bool(prior) != bool(existing): raise RuntimeError('invalid operation ownership')
+        with c._authorized_bank():
+            result = self.bank._mutate(c, operation_id, action, args)
+        if not prior:
+            c.execute('INSERT INTO local_operations VALUES (?, ?, ?)', (operation_id, issuer, subject))
+        return result, bool(prior)
+
     def mutate(self, family, token, operation_id, action, args):
         def op(c):
-            issuer, subject = self._auth(c, family, token)
-            if not isinstance(operation_id, str) or not operation_id or len(operation_id) > 200: raise ValueError('valid operation ID required')
-            prior = c.execute('SELECT issuer, subject FROM local_operations WHERE operation_id=?', (operation_id,)).fetchone()
-            if prior and (prior['issuer'], prior['subject']) != (issuer, subject): raise PermissionError('denied')
-            existing = c.execute('SELECT operation_id FROM hosted_operations WHERE operation_id=?', (operation_id,)).fetchone()
-            if bool(prior) != bool(existing): raise RuntimeError('invalid operation ownership')
-            with c._authorized_bank():
-                result = self.bank._mutate(c, operation_id, action, args)
-            if not prior:
-                c.execute('INSERT INTO local_operations VALUES (?, ?, ?)', (operation_id, issuer, subject))
+            result, _ = self._mutate_in_transaction(c, family, token, operation_id, action, args)
             return result
         return self.bank._transaction(op)
