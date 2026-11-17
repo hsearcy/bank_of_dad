@@ -26,6 +26,8 @@ The script creates a local virtual environment, installs Flask, and starts the a
 
 Use Dad controls to adjust allowances and rates, give money, edit transactions, or advance the clock for demonstrations. Kids can collect rewards, save, withdraw, invest, and record spending. Changes persist in SQLite. This is an educational simulation; rates and balances are not financial advice or actual accounts.
 
+Savings interest accrues lazily. A successful savings deposit or withdrawal folds the rounded accrued interest into savings and resets the accrual clock. When that interest is positive, the transaction list records a separate positive `interest` entry labeled “Savings interest” alongside the move, just as it does when interest is collected as a reward. Zero or negative accrued amounts produce no interest entry; existing balance calculations are unchanged. A rejected move does not collect interest. Requests exceeding available funds are capped to the available balance, as before. The balance, entries and history snapshot are committed together. Older moves that capitalized interest without an entry are not backfilled; their past transaction history may not fully explain the balance.
+
 ## Configuration and data
 
 | Variable | Default | Meaning |

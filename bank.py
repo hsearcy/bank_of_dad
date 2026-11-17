@@ -9,6 +9,7 @@ sleeps for days and there's no cron to babysit.
 
 import hashlib
 import time
+from functools import wraps
 
 import config
 import db
@@ -218,6 +219,29 @@ def _tx(conn, kid_id, now, kind, amount, note="", bond_id=None):
 # ---------------------------------------------------------------------------
 # Actions — these mutate and commit.
 # ---------------------------------------------------------------------------
+def _serialized_accrual_action(fn):
+    """Lock before reading accrual state; rollback all writes if an action fails.
+
+    Like the existing actions, successful calls commit the connection. If the
+    caller already has a transaction, it owns any lock acquired before entry.
+    """
+    @wraps(fn)
+    def run(conn, *args, **kwargs):
+        started = not conn.in_transaction
+        if started:
+            conn.execute("BEGIN IMMEDIATE")
+        try:
+            result = fn(conn, *args, **kwargs)
+            if started and conn.in_transaction:  # rejected or nothing to collect
+                conn.rollback()
+            return result
+        except BaseException:
+            conn.rollback()
+            raise
+    return run
+
+
+@_serialized_accrual_action
 def collect_rewards(conn, kid_id, kind="all"):
     """Collect rewards into the right place. `kind` is one of:
       allowance -> wallet, interest -> savings, invest -> wallet, or "all".
@@ -274,6 +298,7 @@ def collect_rewards(conn, kid_id, kind="all"):
     return hero_delta
 
 
+@_serialized_accrual_action
 def move_to_savings(conn, kid_id, amount_cents):
     now = now_ts(conn)
     kid = conn.execute("SELECT * FROM kids WHERE id=?", (kid_id,)).fetchone()
@@ -282,23 +307,28 @@ def move_to_savings(conn, kid_id, amount_cents):
         return False, "Too little to save"
     # Bank any earned interest into the principal first, then add the deposit and
     # reset the clock so interest accrues cleanly from now.
-    new_savings = kid["savings_cents"] + pending_interest(kid, now, savings_weekly_rate(conn)) + amount
+    interest_cents = pending_interest(kid, now, savings_weekly_rate(conn))
+    new_savings = kid["savings_cents"] + interest_cents + amount
     new_wallet = kid["wallet_cents"] - amount
     conn.execute(
         "UPDATE kids SET wallet_cents=?, savings_cents=?, savings_accrued_ts=? "
         "WHERE id=?",
         (new_wallet, new_savings, now, kid_id),
     )
+    if interest_cents > 0:
+        _tx(conn, kid_id, now, "interest", interest_cents, "Savings interest")
     _tx(conn, kid_id, now, "save", amount, "Moved to savings")
     _record_history(conn, kid_id, now)
     conn.commit()
     return True, "Saved!"
 
 
+@_serialized_accrual_action
 def withdraw_savings(conn, kid_id, amount_cents):
     now = now_ts(conn)
     kid = conn.execute("SELECT * FROM kids WHERE id=?", (kid_id,)).fetchone()
-    savings_total = kid["savings_cents"] + pending_interest(kid, now, savings_weekly_rate(conn))  # incl. earned interest
+    interest_cents = pending_interest(kid, now, savings_weekly_rate(conn))
+    savings_total = kid["savings_cents"] + interest_cents  # incl. earned interest
     amount = min(amount_cents, savings_total)
     if amount <= 0:
         return False, "Nothing to take out"
@@ -307,6 +337,8 @@ def withdraw_savings(conn, kid_id, amount_cents):
         "WHERE id=?",
         (kid["wallet_cents"] + amount, savings_total - amount, now, kid_id),
     )
+    if interest_cents > 0:
+        _tx(conn, kid_id, now, "interest", interest_cents, "Savings interest")
     _tx(conn, kid_id, now, "withdraw", amount, "Savings to wallet")
     _record_history(conn, kid_id, now)
     conn.commit()
