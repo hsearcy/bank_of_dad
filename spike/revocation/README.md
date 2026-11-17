@@ -1,0 +1,23 @@
+# Local synthetic revocation protocol experiment — NEVER DEPLOY
+
+This is isolated test code, not connected to the bank, identity, directory, production configuration, or a public API. The temporary Wrangler harness exposes an **unauthenticated loopback test endpoint** including direct family message injection; it is not secure against an attacker. Use synthetic IDs only. It assumes one trusted coordinator is the exclusive authority for session issuance, target registration, grants and fences, that all family operations are serialized with their local SQLite transactions, and that every actual grant is registered durably before it can be sent. The harness can intentionally bypass that authority to inject test messages; malformed message checks are not authentication. Fake `now` values are controlled by tests, not a secure clock.
+
+## Protocol and boundaries
+
+* Coordinator SQLite holds permanent session IDs, expiry, `active -> revoking -> complete` and a monotonically increasing generation (this experiment supports one transition, 0 to 1). It never deletes IDs. Reissuing the same ID fails even after expiry/completion. No ID-generation or garbage collection scheme is implemented.
+* A reservation atomically verifies active/unexpired and records `(session, family)` before a grant may be transmitted. The record remains even if delivery fails, is ambiguous, or the process dies. `deliver` checks this durable registration, then uses actual cross-DO RPC; it deliberately allows late transmission to model an already captured in-flight grant.
+* `begin` atomically prohibits new reservations and advances the generation. A family may still temporarily accept an in-flight grant during revocation, before its fence arrives; **completion, not begin, is the global safety boundary**. Each reserved family must durably apply its monotonic max-generation tombstone and reply before its ack is persisted. Late/duplicate generation-0 grants are denied; stale fences cannot lower the tombstone. Each family serializes grant, fence and access with no network inside SQLite sync transactions.
+* `retry` sends fences at least once when explicitly invoked by the test driver. A lost acknowledgement or unreachable family remains pending; a restart preserves pending work and retries are idempotent. There is no background scheduler, timeout/automatic recovery, fairness or availability guarantee. Zero-target revocation completes immediately. The experiment uses a single shared coordinator object, not principal-level issuance control.
+* Families check the grant expiry at access. Expiry never authorizes reuse and does not remove a pending target. Durable tombstones and session-ID registry are retained indefinitely here. Safe bounded retention needs proof covering message lifetime, backups, restoration, clock assumptions, and non-reuse.
+
+Completion is conditional on durable object storage/RPC ordering and the trusted-owner assumptions. This is an executable protocol experiment, not a security proof. It does not validate OIDC, authenticate assertions/RPC, establish secure clocks, authorize ownership or membership, implement a safe ingress, or integrate real bank sessions. **Issuer-side token/session revocation and global revoke-all for a principal, including an issuance barrier covering concurrent/new sessions, remain open.** No claim is made about multi-region deployment, crash consistency beyond the local runtime restart test, automatic retries, or real network failures (faults model skipped requests and lost replies).
+
+## Run
+
+Install the existing test tooling with `npm ci --prefix tests_hosted` (Wrangler is pinned there), then run:
+
+```sh
+python spike/revocation/test_runtime.py
+```
+
+Optionally set `WRANGLER_BIN` to an existing compatible Wrangler. The script copies only this harness to a temporary source tree, starts local Wrangler on a loopback port with isolated HOME and persistent SQLite state in the temporary directory, restarts it, and removes the fixture on exit. The test covers real cross-DO calls and SQLite storage, controlled ordering/faults, duplicates, race arrivals, restart, multiple families, expiry and malformed requests. It does not show an actual dropped network packet or prove every scheduler interleaving.
