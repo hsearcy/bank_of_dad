@@ -29,7 +29,11 @@ Every local check, bank operation, idempotency lookup/result and membership chan
 or revocation uses the same synchronous SQLite transaction, with no await inside
 it. The SQLite guard remains in force; the exact hosted adapter additionally
 requires an ephemeral connection-bound capability installed after authorization.
-Guard and SQL errors poison the transaction even if caught inside the callback.
+The capability is an internal misuse guard, not an authorization boundary or a
+defense against compromised trusted Python, which can forge or bypass it. Grant
+checks at the restricted RPC boundary are essential. Guard, application validation,
+authorization, and SQL errors poison an active transaction even if caught inside
+the callback; ordinary returned business failures do not.
 Operation IDs are family-scoped, bound to the original issuer and
 subject and canonical payload. Current authorization is checked before any replay;
 a different principal cannot see a result or reuse its ID. A same-principal new

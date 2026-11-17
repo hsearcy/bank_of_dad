@@ -71,3 +71,24 @@ class CapabilityTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'poisoned'):
             self.service._transaction(op)
         self.assertEqual(self.service.read('kids', [])[0]['wallet_cents'], 500)
+
+    def test_caught_application_errors_poison_but_business_failure_commits(self):
+        for callback in (
+            lambda c: self.service._mutate(c, '', 'gift', [1, 1]),
+            lambda c: self.service._mutate(c, 'bad', 'gift', [1, -1]),
+            lambda c: self.service._read(c, 'transactions', [-1]),
+        ):
+            def op(c):
+                c.execute('UPDATE kids SET wallet_cents=999 WHERE id=1')
+                try:
+                    callback(c)
+                except ValueError:
+                    pass
+            with self.assertRaisesRegex(RuntimeError, 'poisoned'):
+                self.service._transaction(op)
+            self.assertEqual(self.service.read('kids', [])[0]['wallet_cents'], 500)
+        self.assertEqual(self.service.mutate('empty', 'spend', [1, 500]), [True, 'Spent!'])
+        self.assertEqual(self.service.mutate('business-failure', 'spend', [1, 1]),
+                         [False, 'No coins to spend'])
+        self.assertEqual(self.service.mutate('business-failure', 'spend', [1, 1]),
+                         [False, 'No coins to spend'])

@@ -32,6 +32,10 @@ class Cursor:
 
 
 class _BankCapability:
+    """Internal misuse guard, not a sandbox or an authorization boundary.
+
+    Trusted Python with arbitrary access can forge or bypass this object.
+    """
     def __init__(self, owner):
         self.owner = owner
         self.active = True

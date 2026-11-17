@@ -30,6 +30,19 @@ class AuthorizationTest(unittest.TestCase):
         self.a.set_member(F, self.owner, PARENT, 'parent', 'active')
         self.parent = self.a.issue_grant_privileged(F, PARENT, 100)
 
+    def test_caught_auth_prevalidation_poison(self):
+        self.a.mutate(F, self.owner, 'kid', 'add_kid', ['Synthetic'])
+        before = snapshot(self.storage)
+        def operation(c):
+            c.execute('UPDATE kids SET wallet_cents=999 WHERE id=1')
+            try:
+                self.a.issue_grant_privileged(F, OWNER, 0)
+            except ValueError:
+                pass
+        with self.assertRaisesRegex(RuntimeError, 'poisoned'):
+            self.a.bank._transaction(operation)
+        self.assertEqual(snapshot(self.storage), before)
+
     def test_policy_revocation_expiry_and_ordering(self):
         a = self.a
         with self.assertRaises(PermissionError): a.set_member(F, self.parent, OTHER, 'parent', 'active')

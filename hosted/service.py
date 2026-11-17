@@ -4,6 +4,7 @@ Each instance must receive exactly one family's DO storage, never shared storage
 No RPC or HTTP transport is provided here.
 """
 import inspect
+import functools
 import json
 import math
 import sqlite3
@@ -33,6 +34,20 @@ MAX_TIMESTAMP = 4_000_000_000
 def _proxy(callback):
     from pyodide.ffi import create_proxy
     return create_proxy(callback)
+
+
+def _poison_on_error(method):
+    """A caught application error must not allow an active transaction to commit."""
+    @functools.wraps(method)
+    def wrapped(self, *args, **kwargs):
+        conn = self.conn if isinstance(self, FamilyService) else self.bank.conn
+        try:
+            return method(self, *args, **kwargs)
+        except BaseException:
+            if conn._active:
+                conn._poisoned = True
+            raise
+    return wrapped
 
 
 def _script(conn, script):
@@ -77,6 +92,7 @@ class FamilyService:
             if destroy:
                 destroy()
 
+    @_poison_on_error
     def _initialize(self, conn):
         tables = conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view','trigger','index') AND name NOT LIKE 'sqlite_%'").fetchall()
         names = {row['name'] for row in tables}
@@ -197,6 +213,7 @@ class FamilyService:
             if not conn.execute('SELECT 1 AS present FROM kids WHERE id=?', (args[0],)).fetchone():
                 raise ValueError('invalid request')
 
+    @_poison_on_error
     def _mutate(self, conn, operation_id, action, args):
         if not isinstance(operation_id, str) or not operation_id or len(operation_id) > 200:
             raise ValueError('valid operation ID required')
@@ -222,6 +239,7 @@ class FamilyService:
                 return self._mutate(conn, operation_id, action, args)
         return self._transaction(op)
 
+    @_poison_on_error
     def _read(self, conn, action, args):
         self._validate(_READS, action, args)
         self._initialize(conn)

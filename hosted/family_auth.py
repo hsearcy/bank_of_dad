@@ -1,13 +1,13 @@
-"""Experimental co-located authorization. Trusted internal calls only, no transport.
+"""Experimental co-located authorization for the restricted FamilyBank RPC.
 
 All asserted identities and time originate at a future trusted verification boundary.
-This module is not connected to Directory or FamilyBank RPC.
+Identity verification, Directory integration and trusted family routing are absent.
 """
 import secrets
 import time
 
 from .directory import _principal, _family, _digest
-from .service import FamilyService, _proxy
+from .service import FamilyService, _proxy, _poison_on_error
 
 MAX_TTL = 43200
 MAX_GRANTS = 1000
@@ -33,6 +33,7 @@ class FamilyAuthorization:
             raise RuntimeError('invalid clock')
         return int(value)
 
+    @_poison_on_error
     def _check(self, c, family):
         _family(family)
         rows = c.execute("SELECT type, name, tbl_name, COALESCE(sql, '') AS sql FROM sqlite_master WHERE type IN ('table','view','trigger','index')").fetchall()
@@ -44,6 +45,7 @@ class FamilyAuthorization:
         if len(marker) != 1 or type(marker[0]['version']) is not int or marker[0]['version'] != 1 or marker[0]['family'] != family:
             raise PermissionError('denied')
 
+    @_poison_on_error
     def bootstrap_privileged(self, family, verified_owner):
         """Create an empty family exactly once. Never expose to an untrusted caller."""
         _family(family)
@@ -73,6 +75,7 @@ class FamilyAuthorization:
             raise PermissionError('denied')
         return row['issuer'], row['subject']
 
+    @_poison_on_error
     def issue_grant_privileged(self, family, verified_principal, ttl):
         """Future verified identity boundary only; directory sessions are not accepted."""
         principal = _principal(verified_principal)
@@ -90,6 +93,7 @@ class FamilyAuthorization:
             return token
         return self.bank._transaction(op)
 
+    @_poison_on_error
     def set_member(self, family, token, principal, role, status):
         principal = _principal(principal)
         if role not in ('owner', 'parent') or status not in ('active', 'disabled'): raise ValueError('invalid membership')

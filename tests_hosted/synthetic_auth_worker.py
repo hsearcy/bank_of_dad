@@ -19,7 +19,8 @@ class SyntheticAuth(DurableObject):
             auth = FamilyAuthorization(self.storage, clock=lambda: now)
             if action == 'snapshot':
                 tables = ('kids', 'bonds', 'transactions', 'history', 'settings',
-                          'hosted_schema', 'sqlite_sequence', 'hosted_operations', 'local_operations')
+                          'hosted_schema', 'sqlite_sequence', 'hosted_operations', 'local_operations',
+                          'local_auth_schema', 'local_members', 'local_grants')
                 result = auth.bank._transaction(lambda c: {
                     table: c.execute('SELECT * FROM ' + table + ' ORDER BY rowid').fetchall()
                     for table in tables})
@@ -32,6 +33,14 @@ class SyntheticAuth(DurableObject):
                 result = auth.bank._transaction(lambda c: c.execute(
                     'UPDATE kids SET savings_accrued_ts=? WHERE id=1',
                     (int(time.time()) - 7 * 86400,)).fetchall())
+            elif action == 'caught_validation':
+                def op(c):
+                    c.execute('UPDATE kids SET wallet_cents=999 WHERE id=1')
+                    try:
+                        auth.bank._mutate(c, '', 'gift', [1, 1])
+                    except ValueError:
+                        pass
+                result = auth.bank._transaction(op)
             elif action == 'fault':
                 original = auth.bank.conn.execute
                 def fail(sql, params=()):

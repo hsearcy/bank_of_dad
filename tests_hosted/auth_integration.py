@@ -123,7 +123,32 @@ def main():
                 assert call('mutate', request, object_name=obj)['result'] == [True, 'Done!']
                 after = call('snapshot', [], object_name=obj)['result']
                 assert [(r['kind'], r['amount_cents']) for r in after['transactions']] == [('save', 500), ('interest', 20), ('withdraw', 1)]
+                kid = after['kids'][0]
+                assert (kid['wallet_cents'], kid['savings_cents']) == (1, 519)
+                h = after['history'][-1]
+                assert (h['kid_id'], h['networth_cents'], h['wallet_cents'], h['savings_cents'], h['invest_cents']) == (1, 520, 1, 519, 0)
                 assert call('mutate', request, object_name=obj)['result'] == [True, 'Done!']
+                assert call('snapshot', [], object_name=obj)['result'] == after
+                # Separate object and real bank clock, not the unrelated grant clock.
+                obj = 'interest-save-once'
+                call('bootstrap_privileged', [F, O], object_name=obj)
+                tok = call('issue_grant_privileged', [F, O, 100], object_name=obj)['result']
+                call('mutate', [F, tok, 'kid', 'add_kid', ['Interest save']], object_name=obj)
+                before = call('snapshot', [], object_name=obj)['result']
+                error = call('caught_validation', [], status=500, object_name=obj)
+                assert error['type'] == 'RuntimeError' and 'transaction poisoned' in error['error']
+                assert call('snapshot', [], object_name=obj)['result'] == before
+                call('mutate', [F, tok, 'initial-save', 'save', [1, 400]], object_name=obj)
+                call('seed_interest', [], object_name=obj)
+                request = [F, tok, 'save-accrued', 'save', [1, 10]]
+                assert call('mutate', request, object_name=obj)['result'] == [True, 'Saved!']
+                after = call('snapshot', [], object_name=obj)['result']
+                assert [(r['kind'], r['amount_cents']) for r in after['transactions']] == [('save', 400), ('interest', 16), ('save', 10)]
+                kid = after['kids'][0]
+                assert (kid['wallet_cents'], kid['savings_cents']) == (90, 426)
+                h = after['history'][-1]
+                assert (h['kid_id'], h['networth_cents'], h['wallet_cents'], h['savings_cents'], h['invest_cents']) == (1, 516, 90, 426, 0)
+                assert call('mutate', request, object_name=obj)['result'] == [True, 'Saved!']
                 assert call('snapshot', [], object_name=obj)['result'] == after
                 call('bootstrap_privileged',[F,O])
                 family2 = 'b'*32

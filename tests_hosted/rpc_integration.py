@@ -30,12 +30,18 @@ with tempfile.TemporaryDirectory(prefix='bod-rpc-') as temp:
             token = call('setup')['result']
             assert call('mutate', token)['result'] is True
             assert call('read', token)['result'][0]['name'] == 'RPC Kid'
-            call('read', 'bad', 500)
-            call('mutate', 'bad', 500)
-            call('wrong_family', token, 500)
-            call('raw', '', 500)
-            call('privileged', '', 500)
-            call('private', token, 500)
+            before = call('snapshot')['result']
+            for action, value, typ, message in [
+                ('read', 'bad', 'JsException', 'PermissionError: denied'),
+                ('mutate', 'bad', 'JsException', 'PermissionError: denied'),
+                ('wrong_family', token, 'JsException', 'PermissionError: denied'),
+                ('raw', '', 'JsException', "TypeError: FamilyBank.mutate() missing 2 required positional arguments"),
+                ('privileged', '', 'JsException', 'TypeError: Method issue_grant_privileged does not exist'),
+                ('private', token, 'JsException', 'TypeError: Method _authorization does not exist'),
+            ]:
+                error = call(action, value, 500)
+                assert error['type'] == typ and message in error['error'], (action, error)
+                assert call('snapshot')['result'] == before, action
             assert len(call('read', token)['result']) == 1
             print('PASS synthetic cross-DO RPC: serialization, authorization and method exposure')
         except BaseException:
