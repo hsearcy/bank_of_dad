@@ -18,26 +18,32 @@ test('positive identity is only exact issuer and subject; JSON round trip and no
 });
 
 test('wrong issuer, audience, nonce, subject, expiry and algorithm reject generically', async () => {
-  for (const claims of [{ iss: 'http://127.0.0.1:1' }, { aud: 'wrong' }, { aud: [CLIENT, 'other'], azp: CLIENT }, { nonce: 'wrong' }, { sub: '' }, { sub: 5 }, { exp: 1 }]) {
-    const { issuer, rp } = await setup(); issuer.overrides.claims = claims;
+  for (const [claims, verified] of [[{ iss: 'http://127.0.0.1:1' }, false], [{ aud: 'wrong' }, false], [{ aud: [CLIENT, 'other'], azp: CLIENT }, true], [{ nonce: 'wrong' }, false], [{ sub: '' }, true], [{ sub: 5 }, false], [{ exp: 1 }, false]]) {
+    const events = []; const { issuer, rp } = await setup({ observe: event => events.push(event) }); issuer.overrides.claims = claims;
     assert.deepEqual(await rp.callback(A, await flow(rp, issuer)), fail, JSON.stringify(claims));
+    assert.deepEqual(issuer.calls, { token: 1, jwks: verified ? 1 : 0 });
+    assert.deepEqual(events, verified ? ['verified_token'] : []);
   }
   const { issuer, rp } = await setup();
   const other = await generateKeyPair('RS256'); issuer.overrides.signingKey = other.privateKey;
   assert.deepEqual(await rp.callback(A, await flow(rp, issuer)), fail, 'wrong signature');
+  assert.deepEqual(issuer.calls, { token: 1, jwks: 1 });
   const x = await setup(); x.issuer.overrides.header = { alg: 'PS256' };
   x.issuer.overrides.signingKey = (await generateKeyPair('PS256')).privateKey;
   assert.deepEqual(await x.rp.callback(A, await flow(x.rp, x.issuer)), fail, 'wrong algorithm');
+  assert.deepEqual(x.issuer.calls, { token: 1, jwks: 0 });
 });
 
 test('malformed and unknown JWKS rejected', async () => {
   for (const jwks of [[{ kty: 'RSA', kid: 'wrong', n: '!', e: 'AQAB' }], [{ kty: 'RSA', kid: 'ignored', n: '', e: '' }], []]) {
     const { issuer, rp } = await setup(); issuer.overrides.jwks = jwks;
     assert.deepEqual(await rp.callback(A, await flow(rp, issuer)), fail);
+    assert.deepEqual(issuer.calls, { token: 1, jwks: 1 });
   }
   const { issuer, rp } = await setup();
   issuer.overrides.jwks = [{ ...issuer.keys[0].jwk, n: '!' }];
   assert.deepEqual(await rp.callback(A, await flow(rp, issuer)), fail);
+  assert.deepEqual(issuer.calls, { token: 1, jwks: 1 });
 });
 
 test('state isolation, expiry, replay and concurrent callback consumption', async () => {
@@ -75,6 +81,17 @@ test('literal callback allowlist, ambiguous callback parameters, generic errors'
   assert.equal((await rp.callback(A, u)).ok, true);
 });
 
+test('extra front-channel tokens are not used as identity', async () => {
+  const { issuer, rp } = await setup();
+  const access = await flow(rp, issuer); access.searchParams.set('access_token', 'untrusted');
+  assert.deepEqual(await rp.callback(A, access), { ok: true, identity: { issuer: ISSUER, subject: 'fake-parent-1' } });
+  assert.deepEqual(issuer.calls, { token: 1, jwks: 1 });
+  const id = await flow(rp, issuer); const plain = new URL(id); id.searchParams.set('id_token', 'untrusted');
+  assert.deepEqual(await rp.callback(A, id), fail);
+  assert.deepEqual(await rp.callback(A, plain), fail);
+  assert.deepEqual(issuer.calls, { token: 1, jwks: 1 });
+});
+
 test('key rotation observed by fresh verifier, retired key rejected', async () => {
   const { issuer, rp } = await setup(); const old = issuer.keys[0];
   assert.equal((await rp.callback(A, await flow(rp, issuer))).ok, true);
@@ -83,4 +100,67 @@ test('key rotation observed by fresh verifier, retired key rejected', async () =
   assert.equal((await fresh.callback(A, await flow(fresh, issuer))).ok, true);
   const newer = new LocalVerifier(issuer); issuer.overrides.signingKey = old.privateKey;
   assert.deepEqual(await newer.callback(A, await flow(newer, issuer)), fail);
+});
+
+
+test('azp and issuance time policy after verified token exchange', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1700000000000 });
+  const time = Date.now() / 1000;
+  const events = []; const { issuer, rp } = await setup({ observe: event => events.push(event) });
+  for (const [claims, accepted] of [
+    [{ azp: 'wrong' }, false], [{ azp: null }, false], [{ azp: CLIENT }, true],
+    [{ iat: time - 151 }, false], [{ iat: time - 150 }, true],
+    [{ iat: time + 30 }, true], [{ iat: time + 31 }, false],
+    [{ iat: 1 }, false], [{ iat: 'not-a-number' }, false],
+  ]) {
+    issuer.overrides.claims = claims;
+    const before = { ...issuer.calls }, eventCount = events.length;
+    const result = await rp.callback(A, await flow(rp, issuer));
+    assert.equal(result.ok, accepted, JSON.stringify(claims));
+    assert.equal(issuer.calls.token, before.token + 1);
+    if (typeof claims.iat !== 'string') {
+      const expected = accepted ? ['verified_token'] : ['verified_token', 'azp' in claims ? 'reject_azp' : 'reject_iat'];
+      assert.deepEqual(events.slice(eventCount), expected, 'reached intended policy after library validation');
+    } else assert.deepEqual(events.slice(eventCount), [], 'library rejects invalid iat type');
+    if (!accepted) assert.deepEqual(result, fail);
+  }
+});
+
+test('long-lived JWKS cache refresh and retirement windows', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1700000000000 });
+  const { issuer, rp } = await setup();
+  const old = issuer.keys[0];
+  assert.equal((await rp.callback(A, await flow(rp, issuer))).ok, true);
+  assert.deepEqual(issuer.calls, { token: 1, jwks: 1 });
+  await issuer.rotate(); const current = issuer.keys[0];
+  // A valid retired-key token is still accepted while its public key is cached.
+  issuer.overrides.signingKey = old.privateKey; issuer.overrides.header = { kid: old.kid };
+  assert.equal((await rp.callback(A, await flow(rp, issuer))).ok, true);
+  assert.equal(issuer.calls.jwks, 1);
+  // A new kid does not cause refresh during the initial cooldown.
+  delete issuer.overrides.signingKey; delete issuer.overrides.header;
+  t.mock.timers.tick(59000);
+  assert.deepEqual(await rp.callback(A, await flow(rp, issuer)), fail);
+  assert.equal(issuer.calls.jwks, 1);
+  t.mock.timers.tick(1000);
+  assert.equal((await rp.callback(A, await flow(rp, issuer))).ok, true);
+  assert.equal(issuer.calls.jwks, 2);
+  issuer.overrides.signingKey = old.privateKey; issuer.overrides.header = { kid: old.kid };
+  assert.deepEqual(await rp.callback(A, await flow(rp, issuer)), fail);
+  assert.equal(issuer.calls.jwks, 2);
+  assert.notEqual(current.kid, old.kid);
+});
+
+test('cached retired key survives until cache age limit without a new-kid refresh', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1700000000000 });
+  const { issuer, rp } = await setup(); const old = issuer.keys[0];
+  assert.equal((await rp.callback(A, await flow(rp, issuer))).ok, true);
+  await issuer.rotate();
+  issuer.overrides.signingKey = old.privateKey; issuer.overrides.header = { kid: old.kid };
+  t.mock.timers.tick(299000);
+  assert.equal((await rp.callback(A, await flow(rp, issuer))).ok, true);
+  assert.equal(issuer.calls.jwks, 1);
+  t.mock.timers.tick(1000);
+  assert.deepEqual(await rp.callback(A, await flow(rp, issuer)), fail);
+  assert.equal(issuer.calls.jwks, 2);
 });
