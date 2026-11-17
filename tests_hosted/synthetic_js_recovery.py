@@ -1,4 +1,5 @@
 """LOCAL TEST ONLY: unauthenticated synthetic RPC fixture. Never deploy."""
+import json
 from workers import WorkerEntrypoint
 from hosted.object import FamilyBank, _rpc_result
 from hosted.recovery import RecoveryAuthorization
@@ -6,6 +7,20 @@ from hosted.family_auth import FamilyAuthorization
 
 F = 'a'*32
 OWNER = {'issuer':'https://issuer.test','subject':'owner'}
+
+
+def full_snapshot(auth):
+    def op(c):
+        schema = c.execute("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name").fetchall()
+        tables = {}
+        for row in schema:
+            if row['type'] == 'table':
+                name = row['name']
+                quoted = '"' + name.replace('"', '""') + '"'
+                rows = c.execute('SELECT * FROM ' + quoted).fetchall()
+                tables[name] = sorted(rows, key=lambda r: json.dumps(r, sort_keys=True))
+        return {'schema': schema, 'tables': tables}
+    return auth.bank._transaction(op)
 
 class SyntheticRecovery(FamilyBank):
     def __init__(self, ctx, env):
@@ -30,6 +45,9 @@ class SyntheticRecovery(FamilyBank):
             return await FamilyBank.read(self, F, token, 'kids', [])
         finally:
             self._authorization = old
+
+    async def fixture_snapshot(self):
+        return _rpc_result(full_snapshot(self._authorization))
 
     async def fixture_fault(self, args, prefix):
         a = self._authorization; original = a.bank.conn.execute

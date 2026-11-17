@@ -55,7 +55,9 @@ def main():
                 assert ok('mutate', F, replacement, 'lost', 'gift', [1, 9]) is True
                 with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
                     assert list(pool.map(lambda _: ok('acknowledge', F, replacement, 'lost', True), range(2))) == [True, True]
+                before = ok('snapshot')
                 assert call('fault', F, replacement, 'fault', 'gift', [1, 5])['type'] == 'RuntimeError'
+                assert ok('snapshot') == before
                 assert ok('pending', F, replacement) is None
                 assert ok('read', F, owner, 'kids', [])[0]['wallet_cents'] == 509
                 assert ok('mutate', F, replacement, 'fault', 'gift', [1, 5]) is True

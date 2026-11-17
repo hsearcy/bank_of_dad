@@ -4,6 +4,20 @@ from urllib.parse import urlparse, parse_qs
 from workers import WorkerEntrypoint, DurableObject, Response
 from hosted.recovery import RecoveryAuthorization
 
+
+def full_snapshot(auth):
+    def op(c):
+        schema = c.execute("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name").fetchall()
+        tables = {}
+        for row in schema:
+            if row['type'] == 'table':
+                name = row['name']
+                quoted = '"' + name.replace('"', '""') + '"'
+                rows = c.execute('SELECT * FROM ' + quoted).fetchall()
+                tables[name] = sorted(rows, key=lambda r: json.dumps(r, sort_keys=True))
+        return {'schema': schema, 'tables': tables}
+    return auth.bank._transaction(op)
+
 class RecoveryDO(DurableObject):
     def __init__(self, ctx, env):
         super().__init__(ctx, env)
@@ -14,10 +28,12 @@ class RecoveryDO(DurableObject):
             request = json.loads(encoded)
             action = request['action']
             if action not in ('bootstrap_privileged', 'issue_grant_privileged', 'set_member',
-                              'revoke', 'read', 'mutate', 'pending', 'outcome', 'acknowledge', 'fault'):
+                              'revoke', 'read', 'mutate', 'pending', 'outcome', 'acknowledge', 'fault', 'snapshot'):
                 raise ValueError('unknown test action')
             auth = RecoveryAuthorization(self.storage, clock=lambda: 1000)
-            if action == 'fault':
+            if action == 'snapshot':
+                result = full_snapshot(auth)
+            elif action == 'fault':
                 original = auth.bank.conn.execute
                 def fail(sql, params=()):
                     result = original(sql, params)

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from test_foundation import Storage
 from test_family_auth import F, OWNER, PARENT, snapshot
+from test_recovery_matrix import full_snapshot
 from hosted.family_auth import FamilyAuthorization
 from hosted.recovery import RecoveryAuthorization
 
@@ -68,7 +69,7 @@ class RecoveryTest(unittest.TestCase):
 
     def test_faults_rollback_and_schema_upgrade_refused(self):
         self.seed()
-        before = snapshot(self.s, ('kids', 'transactions', 'history', 'hosted_operations', 'local_operations', 'local_recovery'))
+        before = full_snapshot(self.s)
         for prefix in ('UPDATE kids SET wallet_cents', 'INSERT INTO hosted_operations', 'INSERT INTO local_operations', 'INSERT INTO local_recovery'):
             for after in (False, True):
                 original = self.s.exec
@@ -83,7 +84,7 @@ class RecoveryTest(unittest.TestCase):
                 with self.subTest(prefix=prefix, after=after), patch.object(self.s, 'exec', side_effect=fault):
                     with self.assertRaisesRegex(RuntimeError, 'injected'): self.a.mutate(F, self.o, 'fault', 'gift', [1, 9])
                 self.assertTrue(hit)
-                self.assertEqual(snapshot(self.s, tuple(before)), before)
+                self.assertEqual(full_snapshot(self.s), before)
         with self.assertRaises(RuntimeError):
             FamilyAuthorization(self.s, lambda f: f, lambda: 1000).read(F, self.o, 'kids', [])
         old = Storage(); self.addCleanup(old.db.close)
@@ -115,6 +116,7 @@ class RecoveryTest(unittest.TestCase):
     def test_ack_fault_rolls_back_and_wrong_family_denied(self):
         self.seed()
         self.a.mutate(F, self.p, 'pending', 'gift', [1, 8])
+        before = full_snapshot(self.s)
         original = self.s.exec
         def fault(sql, *args):
             result = original(sql, *args)
@@ -124,6 +126,7 @@ class RecoveryTest(unittest.TestCase):
         with patch.object(self.s, 'exec', side_effect=fault):
             with self.assertRaisesRegex(RuntimeError, 'ack fault'):
                 self.ack(self.p, 'pending', True)
+        self.assertEqual(full_snapshot(self.s), before)
         self.assertFalse(self.a.pending(F, self.p)['acknowledged'])
         with self.assertRaises(ValueError):
             self.a.mutate(F, self.p, 'blocked', 'gift', [1, 1])

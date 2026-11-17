@@ -6,6 +6,7 @@ export default { async fetch(request, env) {
     let result;
     if (b.method === 'setup') result = await stub.fixture_setup(...b.args);
     else if (b.method === 'v1_read') result = await stub.fixture_v1_read(...b.args);
+    else if (b.method === 'snapshot') result = await stub.fixture_snapshot();
     else if (b.method === 'fault') result = await stub.fixture_fault(...b.args);
     else result = await stub.fixture_invoke(b.method, b.args);
     return Response.json({result});

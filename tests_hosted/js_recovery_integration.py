@@ -28,25 +28,30 @@ def main():
                 assert call('pending',[F,token])=={'result':None}
                 assert call('mutate',[F,token,'seed','add_kid',['Zoë 🐉']])=={'result':True}
                 expected={'operation_id':'seed','request':['add_kid',['Zoë 🐉','🐣','#4f9dde']],'result':True,'acknowledged':False}
-                assert call('pending',[F,token])=={'result':expected}
+                assert json.dumps(call('pending',[F,token]), sort_keys=True) == json.dumps({'result':expected}, sort_keys=True)
                 assert call('acknowledge',[F,token,'seed',1],status=400)=={'error':'invalid'}
                 assert call('mutate',[F,token,'blocked','gift',[1,1]],status=400)=={'error':'invalid'}
                 assert call('acknowledge',[F,token,'seed',True])=={'result':True}
                 assert call('mutate',[F,token,'seed','add_kid',['Zoë 🐉','🐣','#4f9dde']])=={'result':True}
-                assert call('outcome',[F,token,'seed'])['result']==dict(expected,acknowledged=True)
+                assert json.dumps(call('outcome',[F,token,'seed'])['result'], sort_keys=True) == json.dumps(dict(expected,acknowledged=True), sort_keys=True)
                 assert call('read',[F,token,'kids',[]])['result'][0]['name']=='Zoë 🐉'
-                assert call('mutate',[F,token,'zero','collect_rewards',[1,'allowance']])=={'result':0}
+                assert type(call('mutate',[F,token,'zero','collect_rewards',[1,'allowance']])['result']) is int
+                assert call('outcome',[F,token,'zero'])['result']['result'] == 0
+                assert type(call('outcome',[F,token,'zero'])['result']['result']) is int
                 assert call('acknowledge',[F,token,'zero',False],status=400)=={'error':'invalid'}
                 assert call('acknowledge',[F,token,'zero',0])=={'result':True}
                 assert call('mutate',[F,token,'spend-all','spend',[1,500]])=={'result':[True,'Spent!']}
                 assert call('acknowledge',[F,token,'spend-all',[True,'Spent!']])=={'result':True}
                 failure=[False,'No coins to spend']
-                assert call('mutate',[F,token,'failure','spend',[1,1]])=={'result':failure}
-                assert call('pending',[F,token])['result']['result']==failure
+                assert json.dumps(call('mutate',[F,token,'failure','spend',[1,1]])['result']) == json.dumps(failure)
+                assert json.dumps(call('pending',[F,token])['result']['result']) == json.dumps(failure)
                 assert call('acknowledge',[F,token,'failure',[False,'wrong']],status=400)=={'error':'invalid'}
                 assert call('acknowledge',[F,token,'failure',failure])=={'result':True}
                 args=[F,token,'fault','gift',[1,7]]
-                assert call('fault',[args,'INSERT INTO local_recovery'],status=400)=={'error':'fault'}
+                before = call('snapshot')['result']
+                for prefix in ('UPDATE kids SET wallet_cents', 'INSERT INTO hosted_operations', 'INSERT INTO local_operations', 'INSERT INTO local_recovery'):
+                    assert call('fault',[args,prefix],status=400)=={'error':'fault'}
+                    assert call('snapshot')['result'] == before, prefix
                 assert call('pending',[F,token])=={'result':None}
                 assert call('read',[F,token,'kids',[]])['result'][0]['wallet_cents']==0
                 assert call('mutate',args)=={'result':True}
