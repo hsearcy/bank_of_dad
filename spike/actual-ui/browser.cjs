@@ -15,7 +15,7 @@ const crypto = require('node:crypto');
   for (const [i,p] of [a,b].entries()) {
    p.on('pageerror',e=>errors.push(e.message));
    p.on('websocket',ws=>ws.on('framereceived',e=>frames[i].push(e.payload)));
-   await p.addInitScript(() => {const Real = WebSocket; window.sockets=[]; window.WebSocket=class extends Real {constructor(...args){super(...args); sockets.push(this);}};});
+   await p.addInitScript(() => {window.__BOD_SYNTHETIC_HANDSHAKE_MS__=1000; const Real = WebSocket; window.sockets=[]; window.WebSocket=class extends Real {constructor(...args){super(...args); sockets.push(this);}};});
    await p.goto(process.env.BASE_URL);
   }
   // The production template differs only by the additional fixture script.
@@ -279,6 +279,39 @@ const crypto = require('node:crypto');
   await b.route('**/api/state',async route=>{const r=await route.fetch(); const body=await r.json(); body.revision--; body.kids[0].wallet_cents=1; await route.fulfill({json:body});},{times:1});
   assert.equal(await b.evaluate(()=>refresh()),false);
   assert.equal(await b.evaluate(()=>STATE.kids[0].wallet_cents),825);
+  // A request started earlier may reach the real DO later at the same revision.
+  let releaseLaterNow, sawLaterNow;
+  const laterNowGate=new Promise(r=>releaseLaterNow=r), laterNowSeen=new Promise(r=>sawLaterNow=r);
+  await b.route('**/api/state',async route=>{sawLaterNow(); await laterNowGate; await route.continue();},{times:1});
+  await b.evaluate(()=>{window.laterNowRequest=refresh();}); await laterNowSeen;
+  await b.evaluate(()=>refresh());
+  const baselineNow=await b.evaluate(()=>STATE.server_now);
+  const baselineRevision=await b.evaluate(()=>STATE.revision);
+  await control('clock',{family:F,token:ta[0],seconds:8*86400});
+  releaseLaterNow(); await b.evaluate(()=>laterNowRequest);
+  assert.ok(await b.evaluate(()=>STATE.server_now)>baselineNow);
+  assert.equal(await b.evaluate(()=>STATE.revision),baselineRevision);
+  // Deliver high then low frames while the first resulting snapshot is held.
+  let releaseFrame, sawFrame, frameRequests=0;
+  const frameGate=new Promise(r=>releaseFrame=r), frameSeen=new Promise(r=>sawFrame=r);
+  const frameRoute=async route=>{frameRequests++; if(frameRequests===1){sawFrame(); await frameGate;} await route.continue();};
+  await b.route('**/api/state',frameRoute);
+  await b.evaluate(rev=>{const w=sockets.findLast(s=>s.readyState===WebSocket.OPEN && s.onmessage); w.onmessage({data:JSON.stringify({type:'invalidate',revision:rev+2})});},later.revision);
+  await frameSeen;
+  await b.evaluate(rev=>{const w=sockets.findLast(s=>s.readyState===WebSocket.OPEN && s.onmessage); w.onmessage({data:JSON.stringify({type:'invalidate',revision:rev+1})});},later.revision);
+  await b.waitForFunction(()=>true); releaseFrame(); await quiet();
+  assert.ok(frameRequests>=2); assert.equal(await b.evaluate(()=>STATE.revision),later.revision);
+  await b.unroute('**/api/state',frameRoute);
+  // An old socket's failed reload must not damage the replacement view.
+  let releaseSocketFailure, sawSocketFailure;
+  const socketFailureGate=new Promise(r=>releaseSocketFailure=r), socketFailureSeen=new Promise(r=>sawSocketFailure=r);
+  await b.route('**/api/state',async route=>{sawSocketFailure(); await socketFailureGate; await route.fulfill({status:500,body:'unavailable'});},{times:1});
+  await b.evaluate(()=>document.dispatchEvent(new Event('visibilitychange'))); await socketFailureSeen;
+  await b.evaluate(()=>sockets.findLast(s=>s.readyState===WebSocket.OPEN).close());
+  await b.waitForFunction(()=>document.querySelector('#spike-status').textContent==='reconnecting');
+  await b.waitForFunction(()=>document.querySelector('#spike-status').textContent==='connected');
+  releaseSocketFailure(); await quiet();
+  assert.equal(await b.locator('#spike-status').textContent(),'connected'); await dashboard(b,8.25,1,9.25);
   // Intentional offline state cancels retries until online resumes.
   await b.evaluate(()=>{Object.defineProperty(navigator,'onLine',{configurable:true,value:false}); window.dispatchEvent(new Event('offline'));});
   assert.equal(await b.locator('#spike-status').textContent(),'offline');
@@ -327,6 +360,21 @@ const crypto = require('node:crypto');
   assert.equal(failingPreflights,stopped,'logout canceled capped retry');
   await b.unroute('**/api/state',transientRoute);
   await b.evaluate(()=>{window.setTimeout=window.realSetTimeout;});
+  // A browser-mocked CONNECTING socket never opens or closes by itself.
+  await b.evaluate(()=>{window.RealWS=WebSocket; window.stuck=[]; window.WebSocket=class {static OPEN=1; constructor(){this.readyState=0; stuck.push(this);} close(){this.closed=true; this.readyState=3;}};});
+  await b.locator('#spike-token').fill(ta[1]); await b.locator('#spike-connect').click();
+  await b.waitForFunction(()=>stuck.length>=2 && stuck[0].closed,{timeout:5000});
+  assert.equal(await b.locator('#spike-status').textContent(),'reconnecting');
+  await b.locator('#spike-logout').click();
+  const stuckCount=await b.evaluate(()=>stuck.length);
+  assert.equal(await b.evaluate(()=>stuck.at(-1).closed),true);
+  await new Promise(r=>setTimeout(r,1300)); assert.equal(await b.evaluate(()=>stuck.length),stuckCount);
+  await b.locator('#spike-token').fill(ta[1]); await b.locator('#spike-connect').click();
+  const switchStuckCount=await b.evaluate(()=>stuck.length);
+  await b.locator('#spike-family').selectOption(G);
+  assert.equal(await b.evaluate(()=>stuck.at(-1).closed),true);
+  await new Promise(r=>setTimeout(r,1300)); assert.equal(await b.evaluate(()=>stuck.length),switchStuckCount);
+  await b.evaluate(()=>{window.WebSocket=window.RealWS;});
   await connect(b,F,ta[1]);
   // A family switch cancels a pending retry, before a new context is opened.
   await b.evaluate(()=>sockets.findLast(s=>s.readyState===WebSocket.OPEN).close());
@@ -388,7 +436,7 @@ const crypto = require('node:crypto');
   let releaseDenied, denialSeen;
   const denialGate=new Promise(r=>releaseDenied=r), gotDenial=new Promise(r=>denialSeen=r);
   let denialCalls=0;
-  const denialRoute=async route=>{if (++denialCalls===1) {denialSeen(); await denialGate; await route.fulfill({status:403,body:'denied'});} else await route.fulfill({status:500,body:'internal'});};
+  const denialRoute=async route=>{if (++denialCalls===1) {denialSeen(); await denialGate; await route.fulfill({status:401,body:'denied'});} else await route.fulfill({status:500,body:'internal'});};
   await b.route('**/api/state',denialRoute);
   await b.evaluate(()=>{window.denialRequest=refresh().catch(e=>e.message);}); await gotDenial;
   await b.evaluate(()=>refresh().catch(()=>{}));
@@ -398,6 +446,23 @@ const crypto = require('node:crypto');
   assert.equal(await b.locator('#kids').textContent(),'');
   assert.equal(await b.locator('#spike-status').textContent(),'access denied');
   await b.unroute('**/api/state',denialRoute);
+  await connect(b,F,ta[1]);
+  // Exercise a real DO/gateway 403 from the active grant, overtaken by a 500.
+  const doomed=await control('short-grant',{family:F,token:ta[0]});
+  await connect(b,F,doomed); await control('revoke',{family:F,token:doomed});
+  let releaseRealDenied, realDeniedSeen, realDeniedCalls=0;
+  const realDeniedGate=new Promise(r=>releaseRealDenied=r), gotRealDenied=new Promise(r=>realDeniedSeen=r);
+  const realDeniedRoute=async route=>{
+   if (++realDeniedCalls===1) {const response=await route.fetch(); assert.equal(response.status(),403); realDeniedSeen(); await realDeniedGate; await route.fulfill({response});}
+   else await route.fulfill({status:500,body:'internal'});
+  };
+  await b.route('**/api/state',realDeniedRoute);
+  await b.evaluate(()=>{window.realDenialRequest=refresh().catch(e=>e.message);}); await gotRealDenied;
+  await b.evaluate(()=>refresh().catch(()=>{}));
+  releaseRealDenied(); await b.evaluate(()=>realDenialRequest);
+  assert.equal(await b.locator('#spike-token').inputValue(),'');
+  assert.equal(await b.locator('#spike-status').textContent(),'access denied');
+  await b.unroute('**/api/state',realDeniedRoute);
   await connect(b,F,ta[1]);
   // Revocation makes the next reconciliation fail closed and stops retries.
   await control('revoke',{family:F,token:ta[1]});

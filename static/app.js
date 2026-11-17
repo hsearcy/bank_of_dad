@@ -68,7 +68,6 @@ async function refresh() {
   if (SYNTHETIC) {
     if (context !== SYNTHETIC.context() || view !== syntheticView) return false;
     const accepted = SYNTHETIC.accept(state, serial, syntheticSettled);
-    syntheticSettled = Math.max(syntheticSettled, serial);
     if (!accepted) return false;
   }
   STATE = state;

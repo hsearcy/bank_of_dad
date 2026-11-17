@@ -1,10 +1,11 @@
 /* Unsafe fake session controls, exclusively served by the local spike. */
 (() => {
   let hooks, scope = null, epoch = 0, socket = null, revision = -1;
-  let retryTimer = null, safetyTimer = null, attempts = 0, acceptedSerial = 0, preflight = null;
+  let retryTimer = null, safetyTimer = null, handshakeTimer = null, attempts = 0, acceptedSerial = 0, acceptedNow = -1, preflight = null;
+  const handshakeMs = Number(window.__BOD_SYNTHETIC_HANDSHAKE_MS__) || 5000;
   // Test harness may accelerate this synthetic-only safety net.
   const safetyMs = Number(window.__BOD_SYNTHETIC_SAFETY_MS__) || 60000;
-  const clearTimers = () => {clearTimeout(retryTimer); clearInterval(safetyTimer); retryTimer = safetyTimer = null; preflight?.abort(); preflight = null;};
+  const clearTimers = () => {clearTimeout(retryTimer); clearInterval(safetyTimer); clearTimeout(handshakeTimer); retryTimer = safetyTimer = handshakeTimer = null; preflight?.abort(); preflight = null;};
   const ui = document.createElement('aside');
   ui.style.cssText = 'position:fixed;bottom:0;right:0;z-index:200;background:white;max-width:440px;border:2px solid black;padding:4px';
   ui.innerHTML = `<b>READ-ONLY SYNTHETIC ONLY — fake grants, no real authentication</b>
@@ -19,7 +20,7 @@
   const status = value => {el('status').textContent = value;};
   function disconnect(clear = true) {
     epoch++;
-    clearTimers(); attempts = 0; revision = -1; acceptedSerial = 0;
+    clearTimers(); attempts = 0; revision = -1; acceptedSerial = 0; acceptedNow = -1;
     scope = null;
     const old = socket; socket = null;
     if (old) {old.onmessage = old.onopen = old.onclose = old.onerror = null; old.close();}
@@ -60,15 +61,14 @@
       }
       return applied;
     } catch (e) {
-      if (e.name !== 'AbortError' && g === epoch) {
-        if (e.denied) {disconnect(); status('access denied');}
-        else status('snapshot failed');
+      if (e.name !== 'AbortError' && g === epoch && ws === socket) {
+        if (!e.denied) status('snapshot failed');
       }
       return false;
     }
   };
   function schedule() {
-    if (!scope || retryTimer || preflight || !navigator.onLine) return;
+    if (!scope || socket || retryTimer || preflight || !navigator.onLine) return;
     const g = epoch, delay = Math.min(30000, 500 * 2 ** Math.min(attempts++, 6));
     retryTimer = setTimeout(async () => {
       retryTimer = null;
@@ -99,12 +99,15 @@
       let frame; try {frame = JSON.parse(e.data);} catch (_) {return;}
       if (frame?.type === 'invalidate' && Number.isSafeInteger(frame.revision) && frame.revision >= 0 && frame.revision > revision) reload();
     };
-    ws.onopen = () => {if (current()) reload();};
-    ws.onclose = ws.onerror = () => {
+    ws.onopen = () => {if (current()) {clearTimeout(handshakeTimer); handshakeTimer = null; reload();}};
+    const lost = () => {
       if (!current()) return;
+      clearTimeout(handshakeTimer); handshakeTimer = null;
       socket = null; ws.onmessage = ws.onopen = ws.onclose = ws.onerror = null; ws.close();
       hooks?.clear(); status(navigator.onLine ? 'reconnecting' : 'offline'); schedule();
     };
+    ws.onclose = ws.onerror = lost;
+    handshakeTimer = setTimeout(lost, handshakeMs);
   }
   async function connect(family, token) {
     disconnect(false);
@@ -115,8 +118,9 @@
   }
   window.__BOD_SYNTHETIC_SPIKE__ = {enabled:true, request, context:()=>epoch,
     accept(state, serial, settled) {
-      if (!Number.isSafeInteger(state.revision) || state.revision < 0 || state.revision < revision || (state.revision === revision && (serial <= acceptedSerial || serial < settled))) return false;
-      revision = state.revision; acceptedSerial = serial; return true;
+      if (!Number.isSafeInteger(state.revision) || state.revision < 0 || typeof state.server_now !== 'number' || !Number.isFinite(state.server_now) || state.server_now < 0 || state.server_now > Number.MAX_SAFE_INTEGER || state.revision < revision) return false;
+      if (state.revision === revision && (serial < settled || state.server_now < acceptedNow || (state.server_now === acceptedNow && serial <= acceptedSerial))) return false;
+      revision = state.revision; acceptedNow = state.server_now; acceptedSerial = serial; return true;
     },
     attach(value) {hooks = value;}, connect, disconnect};
   el('connect').onclick = () => connect(el('family').value, el('token').value);
@@ -124,7 +128,7 @@
   el('family').onchange = () => disconnect();
   document.addEventListener('visibilitychange', () => {if (scope && document.visibilityState === 'visible' && navigator.onLine) {if (socket?.readyState === WebSocket.OPEN) reload(); else schedule();}});
   window.addEventListener('offline', () => {
-    clearTimeout(retryTimer); retryTimer = null; preflight?.abort(); preflight = null;
+    clearTimeout(retryTimer); clearTimeout(handshakeTimer); retryTimer = handshakeTimer = null; preflight?.abort(); preflight = null;
     if (socket) {const old = socket; socket = null; old.onmessage = old.onopen = old.onclose = old.onerror = null; old.close();}
     if (scope) {hooks?.clear(); status('offline');}
   });
