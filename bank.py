@@ -8,6 +8,7 @@ sleeps for days and there's no cron to babysit.
 """
 
 import hashlib
+import sqlite3
 import time
 from functools import wraps
 
@@ -220,23 +221,37 @@ def _tx(conn, kid_id, now, kind, amount, note="", bond_id=None):
 # Actions — these mutate and commit.
 # ---------------------------------------------------------------------------
 def _serialized_accrual_action(fn):
-    """Lock before reading accrual state; rollback all writes if an action fails.
+    """Serialize writers before their first read, without owning caller work.
 
-    Like the existing actions, successful calls commit the connection. If the
-    caller already has a transaction, it owns any lock acquired before entry.
+    A caller transaction gets a savepoint and an attempted write lock. A stale
+    WAL read snapshot cannot be upgraded: SQLite raises BUSY_SNAPSHOT and the
+    caller must restart its outer transaction. Never commit that transaction.
     """
     @wraps(fn)
     def run(conn, *args, **kwargs):
+        if not isinstance(conn, sqlite3.Connection):
+            raise TypeError("bank actions require a sqlite3.Connection; adapters need an equivalent transaction implementation")
         started = not conn.in_transaction
         if started:
             conn.execute("BEGIN IMMEDIATE")
+        else:
+            conn.execute("SAVEPOINT bank_action")
         try:
+            if not started:
+                # A deferred caller transaction may have no write lock yet.
+                # This acquires SQLite's database-wide writer reservation without
+                # changing a row or firing row triggers.
+                conn.execute("UPDATE kids SET id=id WHERE 0")
             result = fn(conn, *args, **kwargs)
-            if started and conn.in_transaction:  # rejected or nothing to collect
-                conn.rollback()
+            conn.execute("COMMIT" if started else "RELEASE SAVEPOINT bank_action")
             return result
         except BaseException:
-            conn.rollback()
+            if conn.in_transaction:
+                if started:
+                    conn.execute("ROLLBACK")
+                else:
+                    conn.execute("ROLLBACK TO SAVEPOINT bank_action")
+                    conn.execute("RELEASE SAVEPOINT bank_action")
             raise
     return run
 
@@ -294,7 +309,6 @@ def collect_rewards(conn, kid_id, kind="all"):
         conn.execute("UPDATE bonds SET collected=1 WHERE id=?", (b["id"],))
 
     _record_history(conn, kid_id, now)
-    conn.commit()
     return hero_delta
 
 
@@ -319,7 +333,6 @@ def move_to_savings(conn, kid_id, amount_cents):
         _tx(conn, kid_id, now, "interest", interest_cents, "Savings interest")
     _tx(conn, kid_id, now, "save", amount, "Moved to savings")
     _record_history(conn, kid_id, now)
-    conn.commit()
     return True, "Saved!"
 
 
@@ -341,10 +354,10 @@ def withdraw_savings(conn, kid_id, amount_cents):
         _tx(conn, kid_id, now, "interest", interest_cents, "Savings interest")
     _tx(conn, kid_id, now, "withdraw", amount, "Savings to wallet")
     _record_history(conn, kid_id, now)
-    conn.commit()
     return True, "Done!"
 
 
+@_serialized_accrual_action
 def spend(conn, kid_id, amount_cents, reason=""):
     """Spend coins from the wallet, recording what it was for."""
     now = now_ts(conn)
@@ -356,7 +369,6 @@ def spend(conn, kid_id, amount_cents, reason=""):
                  (kid["wallet_cents"] - amount, kid_id))
     _tx(conn, kid_id, now, "spend", -amount, (reason or "").strip() or "Spent it")
     _record_history(conn, kid_id, now)
-    conn.commit()
     return True, "Spent!"
 
 
@@ -375,6 +387,7 @@ def transactions(conn, kid_id, limit=60):
 _AMOUNT_EDITABLE = {"gift", "allowance", "interest", "spend"}
 
 
+@_serialized_accrual_action
 def delete_transaction(conn, tx_id):
     """Delete a transaction AND reverse its effect on the kid's balances."""
     now = now_ts(conn)
@@ -413,10 +426,10 @@ def delete_transaction(conn, tx_id):
                  (w, s, kid["id"]))
     conn.execute("DELETE FROM transactions WHERE id=?", (tx_id,))
     _record_history(conn, kid["id"], now)
-    conn.commit()
     return True, "Deleted"
 
 
+@_serialized_accrual_action
 def edit_transaction(conn, tx_id, new_amount_cents, new_note):
     """Edit a transaction's note (always) and amount (money kinds only),
     adjusting the balance by the difference."""
@@ -428,7 +441,6 @@ def edit_transaction(conn, tx_id, new_amount_cents, new_note):
 
     if new_amount_cents is None or t["kind"] not in _AMOUNT_EDITABLE:
         conn.execute("UPDATE transactions SET note=? WHERE id=?", (note, tx_id))
-        conn.commit()
         return True, "Saved"
 
     kind, old = t["kind"], t["amount_cents"]
@@ -447,10 +459,10 @@ def edit_transaction(conn, tx_id, new_amount_cents, new_note):
     conn.execute("UPDATE transactions SET amount_cents=?, note=? WHERE id=?",
                  (new_signed, note, tx_id))
     _record_history(conn, kid["id"], now)
-    conn.commit()
     return True, "Saved"
 
 
+@_serialized_accrual_action
 def buy_bond(conn, kid_id, term_key, amount_cents):
     if term_key not in config.BONDS:
         return False, "Unknown bond"
@@ -471,13 +483,13 @@ def buy_bond(conn, kid_id, term_key, amount_cents):
     )
     _tx(conn, kid_id, now, "invest", amount, f"Invested ({spec['label']} lock)", cur.lastrowid)
     _record_history(conn, kid_id, now)
-    conn.commit()
     return True, "Locked in!"
 
 
 # ---------------------------------------------------------------------------
 # Dad / admin actions.
 # ---------------------------------------------------------------------------
+@_serialized_accrual_action
 def gift(conn, kid_id, amount_cents, note="From Dad"):
     """Add money to a kid's wallet, recording what it was for — the mirror image
     of `spend`, so a deposit carries a reason just like a purchase does."""
@@ -492,7 +504,6 @@ def gift(conn, kid_id, amount_cents, note="From Dad"):
                  (kid["wallet_cents"] + amount, kid_id))
     _tx(conn, kid_id, now, "gift", amount, (note or "").strip() or "From Dad")
     _record_history(conn, kid_id, now)
-    conn.commit()
     return True
 
 
@@ -522,6 +533,7 @@ def update_kid(conn, kid_id, name=None, emoji=None, color=None):
     return True
 
 
+@_serialized_accrual_action
 def set_allowance(conn, kid_id, amount_cents, period_days, enabled=True):
     """Set a kid's allowance controls.
 
@@ -542,7 +554,6 @@ def set_allowance(conn, kid_id, amount_cents, period_days, enabled=True):
             "allowance_period_days=? WHERE id=?",
             (amount_cents, period_days, kid_id),
         )
-        conn.commit()
         return True
 
     # Only a disabled -> enabled transition needs rescheduling. Existing
@@ -565,7 +576,6 @@ def set_allowance(conn, kid_id, amount_cents, period_days, enabled=True):
             "allowance_periods_paid=? WHERE id=?",
             (amount_cents, period_days, anchor, periods_paid, kid_id),
         )
-        conn.commit()
         return True
 
     conn.execute(
@@ -573,7 +583,6 @@ def set_allowance(conn, kid_id, amount_cents, period_days, enabled=True):
         "allowance_period_days=? WHERE id=?",
         (amount_cents, period_days, kid_id),
     )
-    conn.commit()
     return True
 
 
