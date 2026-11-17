@@ -14,12 +14,16 @@ from flask import Flask, jsonify, render_template, request
 import bank
 import config
 import db
+import hosted
 
 app = Flask(__name__)
 # Always revalidate static assets so a pushed update shows on the tablet without
 # a manual hard-refresh (low-traffic local app, caching buys us nothing here).
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
-db.init_db()
+if hosted.enabled():
+    hosted.Hosted(app)
+else:
+    db.init_db()
 
 
 def cfg(conn):
@@ -46,7 +50,7 @@ def index():
 @app.route("/sw.js")
 def service_worker():
     # served from root so its scope covers the whole app
-    resp = app.send_static_file("sw.js")
+    resp = app.send_static_file("hosted-sw.js" if hosted.enabled() else "sw.js")
     resp.headers["Content-Type"] = "application/javascript"
     resp.headers["Service-Worker-Allowed"] = "/"
     resp.headers["Cache-Control"] = "no-cache"
@@ -147,6 +151,8 @@ def _pin():
 def _pin_ok(conn):
     """403 JSON response if the Dad PIN is set and wasn't supplied/correct;
     otherwise None (allowed)."""
+    if hosted.enabled():
+        return None  # Hosted.guard has already authenticated and authorized the parent.
     if not bank.check_dad_pin(conn, _pin()):
         return jsonify({"ok": False, "error": "Wrong PIN"}), 403
     return None

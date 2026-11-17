@@ -34,12 +34,18 @@ let DAD_PIN = null; // remembered after a correct entry, for this page session
 
 async function api(path, body) {
   const headers = { "Content-Type": "application/json" };
+  const csrf = document.querySelector('meta[name="csrf-token"]');
+  if (csrf) headers["X-CSRF-Token"] = csrf.content;
   if (DAD_PIN && path.startsWith("/api/admin")) headers["X-Dad-Pin"] = DAD_PIN;
   const res = await fetch(path, {
     method: body ? "POST" : "GET",
     headers,
     body: body ? JSON.stringify(body) : undefined,
   });
+  if (res.status === 401 || res.status === 402) {
+    window.location.replace(res.status === 401 ? '/auth/login' : '/billing');
+    throw new Error('Parent sign-in or subscription required');
+  }
   return res.json();
 }
 
@@ -1099,7 +1105,7 @@ function askPin(err, opts = {}) {
 // so the Dad controls are never left unprotected.
 async function ensurePinSetup() {
   const st = await api("/api/admin/status");
-  if (st.pin_set) return;
+  if (st.pin_set || st.hosted_parent) return;
   let err = "Welcome! Create a Dad PIN to protect the controls.";
   while (true) {
     const p1 = await askPin(err, { mandatory: true, title: "🔒 Set Dad PIN" });

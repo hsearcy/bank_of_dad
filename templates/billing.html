@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bank of Dad — family subscription</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><main style="max-width:40rem;margin:3rem auto;padding:1rem">
+<h1>Bank of Dad</h1>
+<p>Hosted family access costs <strong>$9.99 USD per year</strong>. Self-hosting remains free.</p>
+{% if active %}<p>Your family subscription is active. <a href="/">Open your family bank</a>.</p>
+{% else %}<p>Your family bank needs an active subscription. Signing in or returning from Checkout alone does not activate it.</p>
+<form action="/billing/checkout" method="post"><input type="hidden" name="csrf_token" value="{{ session.csrf }}"><button>Subscribe with Stripe</button></form>{% endif %}
+{% if family.customer %}
+<form action="/billing/portal" method="post"><input type="hidden" name="csrf_token" value="{{ session.csrf }}"><button>Manage billing / cancel in Stripe</button></form>
+<form action="/billing/refresh" method="post"><input type="hidden" name="csrf_token" value="{{ session.csrf }}"><button>Refresh subscription status</button></form>
+{% endif %}
+<p>Stripe hosts payment entry and stores your payment information. Bank of Dad stores an identity-provider subject ID, a family ID, Stripe customer/session IDs and subscription expiry, browser sessions, and the family bank data you enter (children’s display names, balances, allowances and transaction notes/history). Use nicknames; no birth dates or child emails are required. Your sign-in provider may require a parent email for login/recovery. We request only the OpenID identity scope, not your profile or email.</p>
+<p>This is an educational balance tracker, not a real bank account. A signed-in parent session can use all controls: do not share it as a restricted child login.</p>
+<form action="/auth/logout" method="post"><input type="hidden" name="csrf_token" value="{{ session.csrf }}"><button>Sign out of Bank of Dad</button></form>
+</main></body></html>

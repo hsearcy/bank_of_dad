@@ -36,9 +36,18 @@ Use Dad controls to adjust allowances and rates, give money, edit transactions, 
 
 For example, `BANK_OF_DAD_PORT=5005 ./run.sh`. Back up your database separately; it contains children's names, balances, history and the PIN hash. Never commit it, local environment files, or backups to a public repository. The app creates the database directory when needed. Configure rules in `config.py` or use the Dad panel for per-child allowances and rates.
 
-## Security limitations
+## Optional hosted families and subscriptions
 
-**Localhost is the safe default. Do not expose this app to the public internet or an untrusted network.** The built-in Flask server is for local use, not a production deployment. The PIN is a child deterrent, not secure authentication: it has a small search space, no rate limiting, and is sent in requests without encryption over HTTP. Before the first PIN is set, administrative API access is not protected; set it immediately on a trusted machine. The kid-facing API is intentionally unauthenticated, and anyone with access can view or modify some data. Network access requires your own strong authentication, transport encryption, network isolation, and security review. No payment or banking integration is provided.
+An opt-in hosted mode adds managed OIDC parent sign-in, server-owned families,
+separate SQLite bank storage per family, and Stripe-hosted Checkout/customer portal
+for **$9.99 USD/year per family**. Self-hosting stays free and needs no Stripe or
+identity-provider dependencies or credentials. See [HOSTED.md](HOSTED.md) for setup,
+retained data, verification and explicit limits. Hosted mode is not enabled by
+`run.sh` and has not been deployed or verified against real provider accounts.
+
+## Self-hosted security limitations
+
+**Localhost is the safe default. Do not expose self-hosted mode to the public internet or an untrusted network.** The built-in Flask server is for local use, not a production deployment. The PIN is a child deterrent, not secure authentication: it has a small search space, no rate limiting, and is sent in requests without encryption over HTTP. Before the first PIN is set, administrative API access is not protected; set it immediately on a trusted machine. The kid-facing API is intentionally unauthenticated, and anyone with access can view or modify some data. Network access requires your own strong authentication, transport encryption, network isolation, and security review. Self-hosted mode has no payment integration; neither mode connects to a real bank.
 
 ## Tests
 
