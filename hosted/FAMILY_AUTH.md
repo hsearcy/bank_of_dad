@@ -48,3 +48,11 @@ Synthetic tests: `python -m unittest discover -s tests_hosted -p 'test_*.py'` an
 `python tests_hosted/auth_integration.py` (requires pinned Wrangler as described
 in README). The integration starts an intentionally unauthenticated test fixture on
 loopback with disposable emulator data; it is not an authenticated deployment.
+The role/action effect matrix uses a frozen clock and disposable SQLite adapter:
+owner and parent each collect a seeded allowance and retry it without another
+balance, ledger or history change. The multi-grant disable/reactivate regression
+also runs on that adapter. These specific expanded assertions are not exercised
+through the local DO transport; the existing DO integration is a separate smoke
+and concurrency test. They do not establish production Cloudflare, RPC, gateway,
+identity-verification or real-data behavior. Interest and investment collection
+are covered by the separate bank foundation tests, not this role matrix.

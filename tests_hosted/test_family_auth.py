@@ -64,11 +64,54 @@ class AuthorizationTest(unittest.TestCase):
     def test_action_role_matrix_and_same_principal_new_grant_retry(self):
         from hosted.service import _MUTATIONS, _READS
         cases = {'add_kid': ['Extra'], 'gift': [1, 100], 'save': [1, 10],
-                 'withdraw': [1, 1], 'spend': [1, 1], 'invest': [1, '1mo', 1],
-                 'collect_rewards': [1]}
+                 'withdraw': [1, 1], 'spend': [1, 1], 'invest': [1, '1mo', 4],
+                 'collect_rewards': [1, 'allowance']}
         reads = {'kids': [], 'transactions': [1]}
         self.assertEqual(set(cases), set(_MUTATIONS))
         self.assertEqual(set(reads), set(_READS))
+
+        # Each role exercises the same independently seeded family and clock.
+        expected = [
+            (True, (500, 0, 0), None),
+            (True, (600, 0, 0), ('gift', 100, 'From Dad')),
+            ([True, 'Saved!'], (590, 10, 0), ('save', 10, 'Moved to savings')),
+            ([True, 'Done!'], (591, 9, 0), ('withdraw', 1, 'Savings to wallet')),
+            ([True, 'Spent!'], (590, 9, 0), ('spend', -1, 'Spent it')),
+            ([True, 'Locked in!'], (586, 9, 4), ('invest', 4, 'Invested (1 Month lock)')),
+            (300, (886, 9, 4), ('allowance', 300, 'Allowance')),
+        ]
+        self.assertEqual(len(cases), len(expected))
+        with patch('bank.time.time', return_value=1700000000):
+            for role in ('owner', 'parent'):
+                s = Storage(); self.addCleanup(s.db.close)
+                a = FamilyAuthorization(s, lambda x: x, lambda: self.now)
+                a.bootstrap_privileged(F, OWNER)
+                owner = a.issue_grant_privileged(F, OWNER, 100)
+                a.set_member(F, owner, PARENT, 'parent', 'active')
+                token = owner if role == 'owner' else a.issue_grant_privileged(F, PARENT, 100)
+                self.assertIs(a.mutate(F, owner, 'seed', 'add_kid', ['Seed']), True)
+                s.db.execute('UPDATE kids SET allowance_anchor_ts=? WHERE id=1', (1700000000 - 14*86400,))
+                self.assertEqual(a.read(F, token, 'kids', [])[0]['pending_allowance_cents'], 300)
+                ledger, history = [], []
+                for (action, args), (result, balances, entry) in zip(cases.items(), expected):
+                    with self.subTest(role=role, action=action):
+                        self.assertEqual(a.mutate(F, token, action, action, args), result)
+                        if entry:
+                            ledger.insert(0, entry)
+                            w, saving, invest = balances
+                            history.append((w+saving+invest, w, saving, invest))
+                        kids = a.read(F, token, 'kids', [])
+                        self.assertEqual([k['name'] for k in kids], ['Seed', 'Extra'])
+                        kid = kids[0]
+                        self.assertEqual((kid['wallet_cents'], kid['savings_cents'], kid['invest_cents']), balances)
+                        self.assertEqual(kid['owned_cents'], sum(balances))
+                        self.assertEqual(kid['pending_allowance_cents'], 0 if action == 'collect_rewards' else 300)
+                        self.assertEqual([(h['v'], h['wallet'], h['savings'], h['invest']) for h in kid['history']], history)
+                        self.assertEqual([(t['kind'], t['amount_cents'], t['note']) for t in a.read(F, token, 'transactions', [1])], ledger)
+                before = (a.read(F, token, 'kids', []), a.read(F, token, 'transactions', [1]))
+                self.assertEqual(a.mutate(F, token, 'collect_rewards', 'collect_rewards', [1, 'allowance']), 300)
+                self.assertEqual(a.mutate(F, token, 'collect-again', 'collect_rewards', [1, 'allowance']), 0)
+                self.assertEqual((a.read(F, token, 'kids', []), a.read(F, token, 'transactions', [1])), before)
         self.a.mutate(F, self.owner, 'seed', 'add_kid', ['Seed'])
         disabled = {'issuer': 'https://issuer.test', 'subject': 'disabled'}
         self.a.set_member(F, self.owner, disabled, 'parent', 'active')
@@ -94,6 +137,25 @@ class AuthorizationTest(unittest.TestCase):
         before = self.a.read(F, self.owner, 'kids', [])
         self.assertEqual(self.a.mutate(F, replacement, 'same-principal', 'gift', [1, 7]), result)
         self.assertEqual(self.a.read(F, self.owner, 'kids', []), before)
+
+    def test_disable_invalidates_all_active_grants_across_reactivation(self):
+        a = self.a
+        self.assertIs(a.mutate(F, self.owner, 'seed', 'add_kid', ['Seed']), True)
+        old = [self.parent, a.issue_grant_privileged(F, PARENT, 100)]
+        for token in old:
+            self.assertEqual(a.read(F, token, 'kids', [])[0]['wallet_cents'], 500)
+        a.set_member(F, self.owner, PARENT, 'parent', 'disabled')
+        for token in old:
+            with self.assertRaises(PermissionError): a.read(F, token, 'kids', [])
+            with self.assertRaises(PermissionError): a.mutate(F, token, 'disabled', 'gift', [1, 7])
+        a.set_member(F, self.owner, PARENT, 'parent', 'active')
+        for token in old:
+            with self.assertRaises(PermissionError): a.read(F, token, 'kids', [])
+            with self.assertRaises(PermissionError): a.mutate(F, token, 'reactivated', 'gift', [1, 7])
+        new = a.issue_grant_privileged(F, PARENT, 100)
+        self.assertIs(a.mutate(F, new, 'new', 'gift', [1, 7]), True)
+        self.assertEqual(a.read(F, new, 'kids', [])[0]['wallet_cents'], 507)
+        self.assertEqual([(t['kind'], t['amount_cents']) for t in a.read(F, new, 'transactions', [1])], [('gift', 7)])
 
     def test_schema_and_marker_variants_fail_closed(self):
         alterations = [
