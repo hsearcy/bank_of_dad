@@ -11,7 +11,7 @@ export default {async fetch(request, env) {
   try {
     const args = request.method === 'POST' ? await request.json() : [];
     const action = u.pathname.slice(1);
-    if (!['fixture_setup','fixture_snapshot','fixture_dashboard','fixture_transactions','fixture_mutate','fixture_fault','fixture_bootstrap_fault','fixture_corrupt','fixture_break_schema','fixture_revoke','fixture_mature_zero','mutate','read'].includes(action)) throw Error('unknown');
+    if (!['fixture_setup','fixture_snapshot','fixture_dashboard','fixture_transactions','fixture_mutate','fixture_fault','fixture_bootstrap_fault','fixture_corrupt','fixture_break_schema','fixture_revoke','fixture_mature_zero','fixture_clock','mutate','read'].includes(action)) throw Error('unknown');
     const result = await obj[action](...args);
     return Response.json({result});
   } catch(e) {return Response.json({error:String(e)}, {status:403});}

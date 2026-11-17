@@ -83,13 +83,63 @@ async function socket(family, token, object=family) {
  // A separate family covers every action without disturbing socket checks.
  const C='c'.repeat(32), [c]=await call('fixture_setup',[C],C);
  const cf=()=>call('fixture_snapshot',[],C), cd=()=>call('fixture_dashboard',[C,c],C);
- let rev=1;
+ const sc=await socket(C,c); let rev=1;
+ const domain=['kids','bonds','transactions','history'];
+ function bookkeeping(old, next, id, result) {
+   for (const table of ['hosted_operations','local_operations']) {
+     const added=next.tables[table].filter(x=>x.operation_id===id);
+     assert.equal(added.length,1,table); assert.deepEqual(next.tables[table].filter(x=>x.operation_id!==id),old.tables[table]);
+   }
+   assert.deepEqual(JSON.parse(next.tables.hosted_operations.find(x=>x.operation_id===id).result),result);
+ }
+ async function frames() { await sleep(100); assert.deepEqual(sc.messages,Array.from({length:rev-1},(_,i)=>({type:'invalidate',revision:i+2}))); assert.deepEqual(sb.messages,[]); }
+ async function unchanged(id, action, args, expected) {
+   const old=await cf(); assert.deepEqual(await call('fixture_mutate',[C,c,id,action,args],C),expected);
+   const next=await cf(); assert.deepEqual(next.schema,old.schema);
+   for(const table of Object.keys(old.tables)) if(!['hosted_operations','local_operations'].includes(table))
+     assert.deepEqual(next.tables[table],old.tables[table],`${id}: ${table}`);
+   assert.deepEqual(next.tables.fixture_revision,old.tables.fixture_revision); bookkeeping(old,next,id,expected);
+   assert.equal((await cd()).revision,rev); await frames();
+   assert.deepEqual(await call('fixture_mutate',[C,c,id,action,args],C),expected); assert.deepEqual(await cf(),next); await frames();
+ }
+ // Empty savings and absent investment rewards are business no-ops.
+ await unchanged('false-withdraw','withdraw',[1,1],[false,'Nothing to take out']);
+ await unchanged('zero-before','collect_rewards',[1,'invest'],0);
+ await unchanged('false-term','invest',[1,'unknown',1],[false,'Unknown bond']);
+ const effects={
+   child:{tables:['kids'],wallet:500,savings:0},
+   gift:{tables:['kids','transactions','history'],wallet:600,savings:0,tx:['gift',100]},
+   save:{tables:['kids','transactions','history'],wallet:500,savings:100,tx:['save',100]},
+   withdraw:{tables:['kids','transactions','history'],wallet:540,savings:60,tx:['withdraw',40]},
+   spend:{tables:['kids','transactions','history'],wallet:520,savings:60,tx:['spend',-20]},
+   invest:{tables:['kids','bonds','transactions','history'],wallet:420,savings:60,tx:['invest',100]},
+   collect:{tables:['kids','bonds','transactions','history'],wallet:520,savings:60,tx:['bond_payout',100]},
+   drain:{tables:['kids','transactions','history'],wallet:0,savings:60,tx:['spend',-520]},
+ };
  async function changed(id, action, args, expected) {
    const old=await cf(), result=await call('fixture_mutate',[C,c,id,action,args],C);
    assert.deepEqual(result,expected); assert.equal((await cd()).revision,++rev);
-   const next=await cf(); assert.notDeepEqual(next,old);
+   const next=await cf(); assert.notDeepEqual(domain.map(t=>next.tables[t]),domain.map(t=>old.tables[t]));
+   assert.deepEqual(next.tables.fixture_revision,[{version:1,revision:rev}]); bookkeeping(old,next,id,expected);
+   const effect=effects[id]; assert.deepEqual(next.schema,old.schema);
+   for (const table of Object.keys(old.tables)) if(![...domain,'hosted_operations','local_operations','fixture_revision','sqlite_sequence'].includes(table))
+     assert.deepEqual(next.tables[table],old.tables[table],`${id}: ${table}`);
+   for (const table of ['transactions','history'])
+     for (const row of old.tables[table]) assert.deepEqual(next.tables[table].find(x=>x.id===row.id),row);
+   for (const table of domain) assert.equal(JSON.stringify(next.tables[table])!==JSON.stringify(old.tables[table]),effect.tables.includes(table),`${id}: ${table}`);
+   assert.equal(next.tables.kids[0].wallet_cents,effect.wallet); assert.equal(next.tables.kids[0].savings_cents,effect.savings);
+   if (effect.tx) {
+     assert.equal(next.tables.transactions.length,old.tables.transactions.length+1);
+     const added=next.tables.transactions.find(x=>!old.tables.transactions.some(y=>x.id===y.id));
+     assert.deepEqual([added.kind,added.amount_cents,added.kid_id],[...effect.tx,1]);
+     const previous=old.tables.kids[0], current=next.tables.kids[0];
+     const allowed=['wallet_cents','savings_cents',...(id==='save'||id==='withdraw'?['savings_accrued_ts']:[])];
+     for (const key of Object.keys(previous)) if(!allowed.includes(key)) assert.deepEqual(current[key],previous[key],`${id}: kid.${key}`);
+     assert.equal(next.tables.history.length,old.tables.history.length+1);
+   } else { assert.equal(next.tables.kids.length,old.tables.kids.length+1); assert.equal(next.tables.kids[1].name,'Second'); }
+   await frames();
    assert.deepEqual(await call('fixture_mutate',[C,c,id,action,args],C),expected);
-   assert.deepEqual(await cf(),next); assert.equal((await cd()).revision,rev);
+   assert.deepEqual(await cf(),next); assert.equal((await cd()).revision,rev); await frames();
  }
  await changed('child','add_kid',['Second'],true);
  await changed('gift','gift',[1,100],true);
@@ -97,6 +147,13 @@ async function socket(family, token, object=family) {
  await changed('withdraw','withdraw',[1,40],[true,'Done!']);
  await changed('spend','spend',[1,20],[true,'Spent!']);
  await changed('invest','invest',[1,'1mo',100],[true,'Locked in!']);
+ // Advance the disposable object's read clock without writing any table or changing auth time.
+ const clockBefore=await cf(), dashboardBefore=await cd();
+ await call('fixture_clock',[C,c,7*86400],C);
+ const dashboardAfter=await cd(); assert.equal(dashboardAfter.revision,dashboardBefore.revision);
+ assert.ok(dashboardAfter.kids[0].pending_interest_cents > dashboardBefore.kids[0].pending_interest_cents);
+ assert.deepEqual(await cf(),clockBefore); await frames();
+ await call('fixture_clock',[C,c,0],C);
  let invested=await cf();
  assert.equal(invested.tables.kids[0].wallet_cents,420);
  assert.equal(invested.tables.kids[0].savings_cents,60);
@@ -108,12 +165,13 @@ async function socket(family, token, object=family) {
  await changed('collect','collect_rewards',[1,'invest'],0);
  let collected=await cf(); assert.equal(collected.tables.bonds[0].collected,1);
  assert.equal(collected.tables.kids[0].wallet_cents,mature.tables.kids[0].wallet_cents+100);
- assert.equal(await call('fixture_mutate',[C,c,'noop','collect_rewards',[1,'invest']],C),0);
- let noop=await cf(); assert.equal((await cd()).revision,rev);
- for(const table of ['kids','bonds','transactions','history']) assert.deepEqual(noop.tables[table],collected.tables[table]);
- assert.equal(noop.tables.hosted_operations.length,collected.tables.hosted_operations.length+1);
- assert.equal(noop.tables.local_operations.length,collected.tables.local_operations.length+1);
- assert.equal(await call('fixture_mutate',[C,c,'noop','collect_rewards',[1,'invest']],C),0); assert.deepEqual(await cf(),noop);
+ await unchanged('noop','collect_rewards',[1,'invest'],0);
+ // Drain wallet, then exercise all remaining applicable false business outcomes.
+ await changed('drain','spend',[1,1000000],[true,'Spent!']);
+ await unchanged('false-save','save',[1,1],[false,'Too little to save']);
+ await unchanged('false-spend','spend',[1,1],[false,'No coins to spend']);
+ await unchanged('false-invest','invest',[1,'1mo',1],[false,'Need more coins first']);
+ const noop=await cf();
  for(const stage of ['before_revision','after_revision']) {
    assert.match(await call('fixture_fault',[C,c,'rollback','withdraw',[1,10],stage],C,403), /synthetic fault/); assert.deepEqual(await cf(),noop);
  }
@@ -122,6 +180,6 @@ async function socket(family, token, object=family) {
  const snap=await full(); await call('fixture_corrupt',[]); const corrupt=await full();
  assert.notDeepEqual(snap,corrupt);
  await call('fixture_dashboard',[A,a],A,403); await call('fixture_mutate',[A,a,'schema','gift',[1,1]],A,403); assert.deepEqual(await full(),corrupt);
- for(const ws of [sa,sa2,sb]) ws.close();
+ for(const ws of [sa,sa2,sb,sc]) ws.close();
  console.log('PASS actual DO: setup/revision, raw RPC denial, atomic rollback, replay/failure, concurrent retry, auth/family sockets, schema fail-closed');
 })().catch(e=>{console.error(e);process.exit(1)});
