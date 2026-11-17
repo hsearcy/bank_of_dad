@@ -14,6 +14,7 @@ also download runtime components. No Cloudflare login is required.
 cd /home/ares/git/bod-python-cloud/cloud-python-spike
 npm ci --ignore-scripts
 TMPDIR=/home/ares/.hermes/cache/scratch python3 test_spike.py
+TMPDIR=/home/ares/.hermes/cache/scratch python3 test_harness.py
 ```
 
 Wrangler is pinned at 4.163.0 with its dependency tree in `package-lock.json`;
@@ -22,7 +23,9 @@ compatibility date and flags are in `wrangler.jsonc`. The harness stages the
 a disposable directory at runtime because Wrangler bundles Python modules from
 its worker directory. They are never maintained as spike copies. The SQLite
 oracle imports those same root modules directly. A fresh temporary directory
-under `TMPDIR` contains all state, logs, and staged source; it is deleted on
+under `TMPDIR` contains all state, logs, and staged source; Wrangler's `HOME`,
+`XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `TMPDIR` and `WRANGLER_LOG_PATH` are forced
+inside it regardless of inherited values. It is deleted on
 normal completion. This Linux harness starts each Wrangler in its own process
 session and waits for all non-zombie process-group members to exit before a
 restart or cleanup, escalating to SIGKILL only for that group. Ctrl-C also runs
@@ -43,7 +46,7 @@ for round in 1 2; do
   wait "$a"; sa=$?
   wait "$b"; sb=$?
   printf 'round %s: %s %s\n' "$round" "$sa" "$sb"
-  [ "$sa" -eq 0 ] && [ "$sb" -eq 0 ] || break
+  if [ "$sa" -ne 0 ] || [ "$sb" -ne 0 ]; then exit 1; fi
 done
 ```
 

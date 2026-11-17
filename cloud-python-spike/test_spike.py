@@ -1,5 +1,6 @@
 """Runs only against disposable local Wrangler storage and an in-memory SQLite oracle."""
 import json
+import re
 import os
 from pathlib import Path
 import shutil
@@ -13,6 +14,8 @@ import time
 import urllib.error
 import urllib.request
 
+# Imported checkout modules must not create __pycache__ outside scratch.
+sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT))
@@ -162,6 +165,78 @@ def stop(p):
             raise RuntimeError(f'process group {p.pid} did not exit')
     p.wait(timeout=1)
 
+def isolated_environment(base):
+    env = os.environ.copy()
+    for key, path in {'HOME': base / 'home', 'XDG_CONFIG_HOME': base / 'config',
+                      'XDG_CACHE_HOME': base / 'cache', 'WRANGLER_LOG_PATH': base / 'wrangler-logs',
+                      'TMPDIR': base / 'tmp'}.items():
+        path.mkdir(parents=True, exist_ok=True)
+        env[key] = str(path)
+    env.update(WRANGLER_SEND_METRICS='false', CI='1', BANK_OF_DAD_DB=str(base / 'forbidden.db'))
+    return env
+
+
+def free_port():
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        return sock.getsockname()[1]
+
+
+def is_bind_failure(output, port):
+    # Match the pinned Wrangler's actual proxy-bind diagnostic, not arbitrary
+    # user/module output mentioning a collision. Other errors must not be hidden.
+    output = re.sub(r'\x1b\[[0-9;]*m', '', output)
+    errors = re.findall(r'^.*\[ERROR\].*$', output, re.MULTILINE)
+    expected = (f'Address already in use (127.0.0.1:{port}). Please check that you are not '
+                'already running a server on this address or specify a different port with --port.')
+    return len(errors) == 1 and errors[0].strip() == '✘ [ERROR] ' + expected
+
+
+def start_wrangler(src, base, log, env, choose_port=free_port, command=None, attempts=5):
+    logpath = Path(log.name)
+    diagnostics = []
+    for attempt in range(attempts):
+        port = choose_port()
+        log.flush()
+        offset = logpath.stat().st_size
+        cmd = command or [str(HERE / 'node_modules/.bin/wrangler'), 'dev']
+        proc = subprocess.Popen(cmd + [
+            '--config', str(src / 'wrangler.jsonc'), '--local', '--ip', '127.0.0.1',
+            '--port', str(port), '--inspector-ip', '127.0.0.1', '--inspector-port', '0',
+            '--persist-to', str(base / 'state')], cwd=src, env=env, stdout=log,
+            stderr=subprocess.STDOUT, start_new_session=True)
+        try:
+            deadline = time.monotonic() + 120
+            while time.monotonic() < deadline:
+                output = logpath.read_bytes()[offset:].decode(errors='replace')
+                if proc.poll() is not None:
+                    # Read again after exit to include all of the failed attempt.
+                    output = logpath.read_bytes()[offset:].decode(errors='replace')
+                    if proc.returncode == 1 and is_bind_failure(output, port):
+                        break
+                    raise RuntimeError(f'Wrangler exited early (status {proc.returncode}):\n{output}')
+                if f'Ready on http://127.0.0.1:{port}' in output:
+                    try:
+                        with urllib.request.urlopen(f'http://127.0.0.1:{port}/read', timeout=2):
+                            pass
+                        return proc, port
+                    except urllib.error.HTTPError:
+                        return proc, port
+                    except OSError:
+                        pass
+                time.sleep(.2)
+            else:
+                raise RuntimeError(f'Wrangler startup timed out:\n{output}')
+        except BaseException:
+            stop(proc)
+            raise
+        stop(proc)
+        diagnostic = f'Bind collision on attempt {attempt + 1} (port {port}):\n{output}'
+        diagnostics.append(diagnostic)
+        print(diagnostic, file=sys.stderr, flush=True)
+    raise RuntimeError('Wrangler bind collision retry limit exceeded:\n' + '\n'.join(diagnostics))
+
+
 def main():
     # Source watched by Wrangler is immutable; state, logs, caches, and DB guard
     # path are siblings, never inside its watched source directory.
@@ -184,59 +259,16 @@ def main():
             assert worker.count(old) == 1, old
             worker = worker.replace(old, new)
         worker_path.write_text(worker)
-        os.environ['BANK_OF_DAD_DB'] = str(base / 'forbidden.db')
-        db.DB_PATH = os.environ['BANK_OF_DAD_DB']
-        os.environ['WRANGLER_SEND_METRICS'] = 'false'
-        os.environ['CI'] = '1'
+        env = isolated_environment(base)
+        db.DB_PATH = env['BANK_OF_DAD_DB']
         port = None
         logpath = base / 'wrangler.log'
         p = None
         with logpath.open('w+') as log:
             def start():
                 nonlocal port
-                # Inspector 0 lets workerd atomically bind an ephemeral port. Its
-                # internal control servers also use OS-assigned ephemeral ports;
-                # Wrangler exposes no CLI control-port option in this version.
-                for attempt in range(5):
-                    with socket.socket() as s:
-                        s.bind(('127.0.0.1', 0))
-                        port = s.getsockname()[1]
-                    log.flush()
-                    offset = logpath.stat().st_size
-                    proc = subprocess.Popen([str(HERE / 'node_modules/.bin/wrangler'), 'dev',
-                        '--config', str(src / 'wrangler.jsonc'), '--local', '--ip', '127.0.0.1',
-                        '--port', str(port), '--inspector-ip', '127.0.0.1', '--inspector-port', '0',
-                        '--persist-to', str(base / 'state')],
-                        cwd=src, env=os.environ.copy(), stdout=log, stderr=subprocess.STDOUT,
-                        start_new_session=True)
-                    try:
-                        deadline = time.monotonic() + 120
-                        while time.monotonic() < deadline:
-                            output = logpath.read_bytes()[offset:].decode(errors='replace')
-                            if 'EADDRINUSE' in output or 'Address already in use' in output:
-                                break
-                            if proc.poll() is not None:
-                                raise RuntimeError('Wrangler exited early')
-                            # Wrangler reports readiness only after its own proxy has
-                            # bound; never mistake an unrelated listener for our worker.
-                            if f'Ready on http://127.0.0.1:{port}' in output:
-                                try:
-                                    with urllib.request.urlopen(f'http://127.0.0.1:{port}/read', timeout=2):
-                                        pass
-                                    return proc
-                                except urllib.error.HTTPError:
-                                    return proc
-                                except OSError:
-                                    pass
-                            time.sleep(.2)
-                        else:
-                            raise RuntimeError('Wrangler startup timed out')
-                    except BaseException:
-                        stop(proc)
-                        raise
-                    stop(proc)
-                    print(f'Bind collision on attempt {attempt + 1}; retrying', file=sys.stderr, flush=True)
-                raise RuntimeError('Wrangler bind collision retry limit exceeded')
+                proc, port = start_wrangler(src, base, log, env)
+                return proc
             try:
                 p = start()
                 assert 'filesystem database access forbidden' in request(port, 'guard')['result']
