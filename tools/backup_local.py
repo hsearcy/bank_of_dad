@@ -15,12 +15,21 @@ def check_integrity(connection):
         raise ValueError("backup integrity check failed")
 
 
+class HardlinkedSourceError(ValueError):
+    pass
+
+
 def backup(source, output):
     source = Path(source).absolute()
     output = Path(output).absolute()
     # Do not let SQLite create a database for a missing or non-file source.
-    if not stat.S_ISREG(source.stat().st_mode):
+    source_stat = source.stat()
+    if not stat.S_ISREG(source_stat.st_mode):
         raise ValueError("source must be an existing regular file")
+    # Other hardlink names cannot be discovered by resolving this path. Their
+    # SQLite sidecar names could otherwise be selected as the backup output.
+    if source_stat.st_nlink != 1:
+        raise HardlinkedSourceError("source has multiple hardlinks")
     # SQLite resolves source symlinks; protect both the given and resolved names.
     resolved_source = source.resolve(strict=True)
     resolved_output = output.resolve(strict=False)
@@ -65,6 +74,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         backup(args.source, args.output)
+    except HardlinkedSourceError:
+        print("Backup failed: source has multiple hardlinks; use a source with one link.", file=sys.stderr)
+        return 1
     except (OSError, sqlite3.Error, ValueError) as exc:
         # Do not expose database content (including integrity-check diagnostics).
         print(f"Backup failed ({type(exc).__name__}); check output and temporary files.", file=sys.stderr)

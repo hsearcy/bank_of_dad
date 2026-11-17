@@ -63,9 +63,36 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(self.source.read_bytes(), before)
         alias = self.root / "alias"
         os.link(self.source, alias)
-        with self.assertRaises(FileExistsError):
+        with self.assertRaisesRegex(ValueError, 'multiple hardlinks'):
             backup_local.backup(self.source, alias)
         self.assertEqual(self.source.read_bytes(), before)
+
+    def test_hardlinked_source_alias_rejected_before_any_output_or_sqlite_open(self):
+        alias = self.root / 'alias.db'
+        os.link(self.source, alias)
+        before = self.source.read_bytes()
+        rows = self.conn.execute('SELECT * FROM family').fetchall()
+        for suffix in ('-journal', '-wal', '-shm'):
+            output = Path(str(self.source) + suffix)
+            with self.subTest(suffix=suffix):
+                with mock.patch.object(backup_local.sqlite3, 'connect') as connect, \
+                     mock.patch.object(backup_local.tempfile, 'TemporaryDirectory') as temp:
+                    with self.assertRaisesRegex(ValueError, 'multiple hardlinks'):
+                        backup_local.backup(alias, output)
+                    connect.assert_not_called()
+                    temp.assert_not_called()
+                self.assertFalse(output.exists())
+                self.assertEqual(self.source.read_bytes(), before)
+                self.assertEqual(self.conn.execute('SELECT * FROM family').fetchall(), rows)
+                self.assertEqual(list(self.root.glob('.bod-backup-*')), [])
+        result = subprocess.run([sys.executable, backup_local.__file__, str(alias),
+                                 str(self.source) + '-journal'], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('multiple hardlinks', result.stderr)
+        self.assertFalse(Path(str(self.source) + '-journal').exists())
+        self.assertEqual(self.source.read_bytes(), before)
+        self.assertEqual(self.conn.execute('SELECT * FROM family').fetchall(), rows)
+        self.assertEqual({p.name for p in self.root.iterdir()}, {self.source.name, alias.name})
 
     def test_broken_symlink_output_is_not_replaced(self):
         self.output.symlink_to(self.root / "nonexistent")
