@@ -43,7 +43,9 @@ export default {async fetch(request, env) {
       };
       if (routes[u.pathname]) {
         const [action,args] = routes[u.pathname];
-        const result = await stub.fixture_mutate(family,token,crypto.randomUUID(),action,args);
+        const operation = request.headers.get('x-spike-operation');
+        if (!operation || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(operation)) return Response.json({error:'missing synthetic operation ID'},{status:400});
+        const result = await stub.fixture_mutate(family,token,operation,action,args);
         return Response.json(action === 'gift' ? {ok:result} : {ok:result[0],message:result[1]});
       }
     }

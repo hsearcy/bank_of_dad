@@ -52,7 +52,7 @@ async function refresh() {
   const context = SYNTHETIC?.context();
   const serial = SYNTHETIC ? ++syntheticRefresh : 0;
   const state = await api("/api/state");
-  if (SYNTHETIC && (context !== SYNTHETIC.context() || serial !== syntheticRefresh)) return;
+  if (SYNTHETIC && (context !== SYNTHETIC.context() || serial !== syntheticRefresh)) return false;
   STATE = state;
   SERVER_NOW = STATE.server_now || Date.now() / 1000;
   FETCH_AT = Date.now() / 1000;

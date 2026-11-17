@@ -13,14 +13,24 @@ The only production file changed is `static/app.js`: an explicitly injected opt-
 ## Run from repository root
 
 ```sh
-export WRANGLER_BIN=/home/ares/git/bod-live-sync-spike/tests_hosted/node_modules/.bin/wrangler
-export PLAYWRIGHT_MODULE=/home/ares/git/bod-live-sync-spike/tests_hosted/node_modules/playwright
-/home/ares/git/bod-js-rpc/.venv/bin/python spike/actual-ui/test_browser.py
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+(cd tests_hosted && npm ci --ignore-scripts)
+export PLAYWRIGHT_MODULE="$PWD/tests_hosted/node_modules/playwright"
+# Optional if Chromium is not installed at /usr/bin/chromium:
+# export CHROMIUM=/path/to/chromium
+.venv/bin/python spike/actual-ui/test_browser.py
 ```
+
+Use a Node.js version supported by the pinned Wrangler in `tests_hosted/package-lock.json` and a locally installed Chromium. `WRANGLER_BIN` optionally overrides the default `tests_hosted/node_modules/.bin/wrangler`.
 
 Use `--serve` for manual local exploration. Bootstrap A once; copy the second displayed fake grant to the second browser and connect it to A. The fixture does not persist credentials across reload; reconnect explicitly. Stop with Ctrl-C to delete state. `TMPDIR` selects the temporary parent; `CHROMIUM` optionally selects the executable. The harness only stops its own Wrangler process group, closes both independent Playwright browser processes in `finally`, removes temporary source/state and checks that the forbidden self-host DB was not created. Successful teardown after the browser run was verified.
 
-`browser.cjs` launches two independent Chromium processes (not two contexts in one process). Its assertions cover exact served source/template, no service worker, both actual dashboards after a Dad-panel gift and savings-modal save, concrete bank state/history agreement, actual spend, exact invalidation frames, transport close, offline mutation/reconnect, page reload/reconnect, wrong-family read/write/socket denial, no cross-family push, older refresh suppression, held real state response across A→B with captured stale socket callbacks, committed gift completion across logout, and held history completion across logout. Held responses contain actual server data; the test does not fabricate balances. Negative event checks use bounded 450 ms windows.
+`browser.cjs` launches two independent Chromium processes (not two contexts in one process). It checks failed first snapshot, plain-text 404s, spend ledger, a committed gift with lost response and failed retry followed by same-ID/same-payload retry after reload (one ledger entry), blocked new writes and pending-state clearing, plus controlled visible-tab resume without push. It also covers exact served source/template, no service worker, both dashboards, gift/save/spend, exact invalidation frames, transport close, reconnect, scoped denials, no cross-family push, older refresh suppression, held state across A→B with stale socket callbacks, committed gift completion across logout, and held history completion across logout. Held responses contain actual server data; the test does not fabricate balances. Negative event checks use bounded 450 ms windows.
+
+## Mutation retry boundary
+
+For the three supported fixture writes, the tab stores one pending operation ID, path, exact serialized payload, family, and SHA-256 fingerprint of the fake grant in `sessionStorage` before sending. It never stores the grant itself. This conservatively scopes to the exact grant (even grants of the same synthetic principal do not share pending records). If storage is unavailable the mutation is not sent. There are no automatic retries: network failure, malformed responses, and non-success HTTP statuses leave the result unresolved and block new supported writes. Use the explicit retry button; it sends the same ID and exact bytes. The local service's operation record deduplicates the commit. A definitive well-formed response clears the record; a rejected business operation is reported as rejected. Reload preserves pending state in the same tab but requires reconnecting with the same fake grant. Logout, family selection, or reconnecting under a different grant clears the record; these actions discard the ability to retry and do not undo a possible commit. Check transaction history before creating a replacement. Tab closure, cleared browser storage, another tab, expiring grants, manual storage tampering and this synthetic-only grant fingerprint are not a durable production reconciliation design. Payloads can contain fixture data and are readable by scripts on the origin; never use real data here.
 
 ## Validation results
 
