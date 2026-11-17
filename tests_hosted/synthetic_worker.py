@@ -15,6 +15,26 @@ class SyntheticBank(FamilyBank):
             args = json.loads(q.get('args', ['[]'])[0])
             if action == 'read':
                 result = self.service.read(args[0], args[1])
+            elif action == 'fixture_view':
+                result = self.service._transaction(lambda c: c.execute('CREATE VIEW orphan AS SELECT 1').fetchall())
+            elif action == 'fixture_balance':
+                # Fixed synthetic-only literals; never accepts SQL or real data.
+                def fixture(c):
+                    self.service._initialize(c)
+                    if args[0] == 'oversized':
+                        c.execute('UPDATE kids SET wallet_cents=9007199254740992 WHERE id=1')
+                    elif args[0] == 'near':
+                        c.execute('UPDATE kids SET wallet_cents=999999999, savings_cents=0 WHERE id=1')
+                    elif args[0] == 'accrual':
+                        c.execute('UPDATE kids SET wallet_cents=0, savings_cents=1000000000, savings_accrued_ts=0 WHERE id=1')
+                    elif args[0] == 'investment':
+                        c.execute('UPDATE kids SET wallet_cents=1000000000, savings_cents=0 WHERE id=1')
+                    return True
+                result = self.service._transaction(fixture)
+            elif action == 'fixture_snapshot':
+                def snapshot(c):
+                    return c.execute("SELECT CAST(wallet_cents AS TEXT) AS wallet, CAST(savings_cents AS TEXT) AS savings, (SELECT count(*) FROM transactions) AS tx, (SELECT count(*) FROM bonds) AS bonds FROM kids WHERE id=1").fetchone()
+                result = self.service._transaction(snapshot)
             elif action == 'fail_after_commit':
                 def fail(conn):
                     bank.gift(conn, 1, 900, 'rollback')

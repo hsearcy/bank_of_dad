@@ -16,12 +16,47 @@ version are rejected; no import or migration of existing family data is offered.
 The version marker, original schema/migrations and operation table are created
 atomically. Future schema versions need explicit, transactional upgrade code.
 
+**Legacy accounting caveat:** saving or withdrawing capitalizes accrued savings
+interest without a separate interest ledger transaction. This inherited bank
+behavior is intentionally unchanged; ledger entries alone do not explain every
+balance change. Do not present the ledger as a complete accounting audit trail.
+
 A mutation requires a stable, family-scoped operation ID (1–200 characters).
-The normalized action and arguments, result and changes are persisted in the same
-transaction. Identical retries return the recorded result, including a negative
-business result; reuse with different parameters fails. Clients must durably
+The canonical payload is the action plus its bound argument values, with omitted
+defaults filled in. Text is preserved exactly: whitespace differences conflict,
+even when bank logic later trims a note. Results and changes are persisted in the
+same transaction. Exact canonical retries return the recorded result while the
+family remains within safe limits; if current state is unsafe, even a retry fails
+closed. A recorded negative business result is also returned on retry; reuse with
+a different canonical payload fails. Clients must durably
 retain and reuse IDs and payloads through lost responses. Records have no
 expiry or pruning policy; do not remove them without a safe retry horizon.
+
+## Conservative hosted-only limits
+
+These limits deliberately favor rejection over precision loss and do not alter the
+self-hosted bank. Inputs and every stored individual balance, signed ledger amount,
+history amount and bond principal/payout must be integer cents of magnitude at most
+1,000,000,000 ($10 million); balances and bond amounts must be nonnegative. Each
+child's owned total, each pending reward component and combined pending total must
+also be between 0 and that ceiling, both before and after every action. Thus an
+otherwise valid gift, accrual, transfer, or investment may be rejected. Interest
+and investment calculations retain the original floating-point/round-to-cent bank
+semantics; this is not decimal-exact interest accounting.
+
+There may be at most 100 children and 1,000 each of bonds, history snapshots and
+transactions **per family**. The full history embedded in `kids` is therefore
+bounded; transaction reads allow 1–100 rows (default 60). IDs and input amounts
+are positive integers no greater than 1,000,000,000. Allowance periods are 1–3650
+days and paid periods at most 100,000; timestamps must be 0–4,000,000,000 epoch
+seconds, the hosted time offset must be zero, savings rate 0–100% per week and
+bond return 0–100%. Defaults are also checked. Operations that hit a limit fail
+atomically; there is no pruning/recovery interface, and an old or long-idle family
+can become unavailable when accrued totals cross the ceiling. SQL predicates
+check stored numbers before the SQLite-to-JavaScript bridge; bounded row counts,
+timestamps and rates keep intermediate sums/products far below 2**53. This does
+not prove arbitrary corrupted schemas or production-scale performance safe.
+Idempotency records remain unbounded and need a future retention policy.
 
 ## Tests (synthetic data only)
 
@@ -52,10 +87,9 @@ request validation at the trust boundary, secure session/revocation, app/API
 integration, backup/recovery, limits and abuse controls, billing, and production
 Cloudflare behavior remain unimplemented or unverified. The current local test
 uses synthetic HTTP to call the service *within* a subclass, not actual
-cross-Worker DO RPC. Only tested bank operations are available. Amount inputs are
-bounded, but aggregate SQLite/JavaScript numeric precision and overflow, storage
-quotas and unbounded history/operation records have not been proven safe at
-scale; do not use for real balances until bounded and tested. Local concurrent
+cross-Worker DO RPC. Only tested bank operations are available. The conservative guards are not a
+substitute for production quota, abuse, corruption, or accounting review.
+Idempotency records remain unbounded. Local concurrent
 requests do not prove multi-region failures or crash durability. No real-data
 migration or upgrade path has been reviewed. This code is a foundation, not a
 claim of production readiness.

@@ -43,6 +43,10 @@ class Connection:
         rows = self._sql.exec(statement, *params).toArray().to_py()
         lastrowid = None
         if statement.lstrip().upper().startswith('INSERT '):
+            # Never marshal an oversized SQLite rowid through JS as a number.
+            check = self._sql.exec('SELECT last_insert_rowid() BETWEEN 1 AND 1000000000 AS ok').toArray().to_py()[0]['ok']
+            if not check:
+                raise ValueError('hosted state exceeds safe limits')
             lastrowid = self._sql.exec('SELECT last_insert_rowid() AS id').toArray().to_py()[0]['id']
         return Cursor(rows, lastrowid)
 

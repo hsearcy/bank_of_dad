@@ -98,6 +98,33 @@ def main():
                 assert call(port, 'read', ['kids', []])['result'] == bank.all_kids_state(c)
                 assert call(port, 'gift', [1, 7, 'retry'], 'same')['result'] is True
                 assert call(port, 'read', ['kids', []])['result'] == bank.all_kids_state(c)
+                # Separate synthetic families exercise SQL-side checks in the real DO bridge.
+                call(port, 'fixture_view', family='view')
+                assert 'unversioned' in call(port, 'read', ['kids', []], family='view', status=500)['error']
+                call(port, 'add_kid', ['Bounds'], 'kid', 'bounds')
+                call(port, 'fixture_balance', ['oversized'], family='bounds')
+                assert 'safe limits' in call(port, 'gift', [1, 1], 'overflow', 'bounds', status=500)['error']
+                assert call(port, 'fixture_snapshot', family='bounds')['result']['wallet'] == '9007199254740992'
+                call(port, 'fixture_balance', ['near'], family='bounds')
+                assert call(port, 'gift', [1, 1, ' x '], 'last', 'bounds')['result'] is True
+                assert 'different payload' in call(port, 'gift', [1, 1, 'x'], 'last', 'bounds', status=500)['error']
+                assert call(port, 'gift', [1, 1, ' x '], 'last', 'bounds')['result'] is True
+                snapshot = call(port, 'fixture_snapshot', family='bounds')['result']
+                assert 'safe limits' in call(port, 'gift', [1, 1], 'too-far', 'bounds', status=500)['error']
+                assert call(port, 'fixture_snapshot', family='bounds')['result'] == snapshot
+                for action, args in [('save', [1, 100]), ('withdraw', [1, 100]), ('spend', [1, 1]), ('invest', [1, '1mo', 100])]:
+                    assert call(port, action, args, action, 'bounds')['result'][0] is True
+                assert call(port, 'read', ['transactions', [1, 101]], family='bounds', status=500)
+                assert call(port, 'read', [[], []], family='bounds', status=500)
+                assert 'invalid request' in call(port, 'save', [99, 1], 'missing', 'bounds', status=500)['error']
+                call(port, 'add_kid', ['Accrual'], 'kid', 'accrual')
+                call(port, 'fixture_balance', ['accrual'], family='accrual')
+                assert 'safe limits' in call(port, 'withdraw', [1, 1], 'w', 'accrual', status=500)['error']
+                assert call(port, 'fixture_snapshot', family='accrual')['result']['savings'] == '1000000000'
+                call(port, 'fixture_balance', ['investment'], family='accrual')
+                before_invest = call(port, 'fixture_snapshot', family='accrual')['result']
+                assert 'safe limits' in call(port, 'invest', [1, '3mo', 1000000000], 'i', 'accrual', status=500)['error']
+                assert call(port, 'fixture_snapshot', family='accrual')['result'] == before_invest
                 assert not (base / 'forbidden.db').exists()
                 print('PASS synthetic DO: SQLite oracle, rollback after inner commit, family isolation, restart, concurrent writes and retry')
             except BaseException:

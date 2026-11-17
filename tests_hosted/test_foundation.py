@@ -3,7 +3,7 @@ import sqlite3
 import unittest
 from unittest.mock import patch
 
-from hosted.service import FamilyService
+from hosted.service import FamilyService, MAX_CENTS
 from hosted.adapter import Connection
 
 class Result:
@@ -106,5 +106,76 @@ class FoundationTest(unittest.TestCase):
         self.storage.db.execute('CREATE TABLE kids (id INTEGER)')
         with self.assertRaises(RuntimeError): self.svc.initialize()
         self.assertIsNone(self.storage.db.execute("SELECT name FROM sqlite_master WHERE name='hosted_schema'").fetchone())
+
+class GuardTest(FoundationTest):
+    def test_view_only_unversioned(self):
+        self.storage.db.execute('CREATE VIEW orphan AS SELECT 1 AS value')
+        with self.assertRaises(RuntimeError): self.svc.initialize()
+        self.assertIsNone(self.storage.db.execute("SELECT name FROM sqlite_master WHERE name='hosted_schema'").fetchone())
+
+    def test_js_precision_reproduction_and_atomic_boundary(self):
+        self.svc.mutate('kid', 'add_kid', ['Kid'])
+        self.storage.db.execute('UPDATE kids SET wallet_cents=9007199254740992')
+        with self.assertRaisesRegex(ValueError, 'safe limits'): self.svc.mutate('overflow', 'gift', [1, 1])
+        self.assertEqual(self.storage.db.execute('SELECT wallet_cents FROM kids').fetchone()[0], 9007199254740992)
+        self.assertEqual(self.storage.db.execute('SELECT count(*) FROM transactions').fetchone()[0], 0)
+        self.storage.db.execute('UPDATE kids SET wallet_cents=?', (MAX_CENTS-1,))
+        self.assertTrue(self.svc.mutate('last', 'gift', [1, 1]))
+        with self.assertRaisesRegex(ValueError, 'safe limits'): self.svc.mutate('too-far', 'gift', [1, 1])
+        self.assertEqual(self.svc.read('kids', [])[0]['wallet_cents'], MAX_CENTS)
+        self.assertIsNone(self.storage.db.execute("SELECT operation_id FROM hosted_operations WHERE operation_id='too-far'").fetchone())
+        self.assertTrue(self.svc.mutate('last', 'gift', [1, 1]))
+        self.assertEqual(self.svc.mutate('save', 'save', [1, 100]), [True, 'Saved!'])
+        self.assertEqual(self.svc.mutate('withdraw', 'withdraw', [1, 100]), [True, 'Done!'])
+        self.assertEqual(self.svc.mutate('spend', 'spend', [1, 1]), [True, 'Spent!'])
+        self.assertEqual(self.svc.mutate('invest', 'invest', [1, '1mo', 100]), [True, 'Locked in!'])
+        self.assertEqual(self.svc.read('kids', [])[0]['owned_cents'], MAX_CENTS - 1)
+
+    def test_accrual_and_payout_limits(self):
+        self.svc.mutate('kid', 'add_kid', ['Kid'])
+        self.storage.db.execute('UPDATE kids SET wallet_cents=0, savings_cents=?, savings_accrued_ts=0', (MAX_CENTS,))
+        with self.assertRaisesRegex(ValueError, 'safe limits'): self.svc.read('kids', [])
+        with self.assertRaisesRegex(ValueError, 'safe limits'): self.svc.mutate('withdraw', 'withdraw', [1, 1])
+        self.assertEqual(self.storage.db.execute('SELECT savings_cents FROM kids').fetchone()[0], MAX_CENTS)
+        self.storage.db.execute('UPDATE kids SET wallet_cents=?, savings_cents=0', (MAX_CENTS,))
+        with self.assertRaisesRegex(ValueError, 'safe limits'): self.svc.mutate('invest', 'invest', [1, '3mo', MAX_CENTS])
+        self.assertEqual(self.storage.db.execute('SELECT wallet_cents FROM kids').fetchone()[0], MAX_CENTS)
+        self.assertEqual(self.storage.db.execute('SELECT count(*) FROM bonds').fetchone()[0], 0)
+
+    def test_invalid_child_action_limits_and_exact_text_retry(self):
+        self.svc.mutate('kid', 'add_kid', ['Kid'])
+        self.assertTrue(self.svc.mutate('x', 'gift', [1, 3, ' note ']))
+        with self.assertRaisesRegex(ValueError, 'different payload'): self.svc.mutate('x', 'gift', [1, 3, 'note'])
+        self.assertTrue(self.svc.mutate('x', 'gift', [1, 3, ' note ']))
+        for action, args in [([], []), ('transactions', [1, 101]), ('transactions', [99])]:
+            with self.assertRaises(ValueError): self.svc.read(action, args)
+        for action, args in [('gift', [99, 1]), ('save', [99, 1]), ('invest', [99, '1mo', 1])]:
+            with self.assertRaisesRegex(ValueError, 'invalid request'): self.svc.mutate('missing', action, args)
+
+    def test_history_and_ledger_caps_and_persisted_amounts(self):
+        self.svc.mutate('kid', 'add_kid', ['Kid'])
+        db = self.storage.db
+        for table, column in [('transactions', 'amount_cents'), ('history', 'networth_cents'), ('bonds', 'payout_cents')]:
+            if table == 'transactions':
+                db.execute("INSERT INTO transactions(kid_id,ts,kind,amount_cents) VALUES(1,1,'gift',9007199254740992)")
+            elif table == 'history':
+                db.execute('INSERT INTO history(kid_id,ts,networth_cents) VALUES(1,1,9007199254740992)')
+            else:
+                db.execute("INSERT INTO bonds(kid_id,term_key,principal_cents,payout_cents,buy_ts,mature_ts,collected) VALUES(1,'1mo',1,9007199254740992,1,2,0)")
+            with self.subTest(table=table), self.assertRaises(ValueError): self.svc.read('kids', [])
+            db.execute(f'DELETE FROM {table}')
+        db.executemany('INSERT INTO history(kid_id,ts,networth_cents) VALUES(1,1,0)', [()] * 1000)
+        self.assertEqual(len(self.svc.read('kids', [])[0]['history']), 1000)
+        with self.assertRaises(ValueError): self.svc.mutate('over-history', 'gift', [1, 1])
+        self.assertEqual(db.execute('SELECT count(*) FROM history').fetchone()[0], 1000)
+        self.assertEqual(db.execute('SELECT wallet_cents FROM kids').fetchone()[0], 500)
+
+    def test_invalid_persisted_rates_and_numbers(self):
+        self.svc.mutate('kid', 'add_kid', ['Kid'])
+        self.storage.db.execute("INSERT INTO settings VALUES ('savings_weekly_pct', 'NaN')")
+        with self.assertRaises(ValueError): self.svc.read('kids', [])
+        self.storage.db.execute('DELETE FROM settings')
+        self.storage.db.execute('UPDATE kids SET wallet_cents=1.5')
+        with self.assertRaises(ValueError): self.svc.read('kids', [])
 
 if __name__ == '__main__': unittest.main()
