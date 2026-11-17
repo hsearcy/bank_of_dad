@@ -28,6 +28,12 @@ Use Dad controls to adjust allowances and rates, give money, edit transactions, 
 
 Savings interest accrues lazily. A successful savings deposit or withdrawal folds the rounded accrued interest into savings and resets the accrual clock. When that interest is positive, the transaction list records a separate positive `interest` entry labeled “Savings interest” alongside the move, just as it does when interest is collected as a reward. Zero or negative accrued amounts produce no interest entry; existing balance calculations are unchanged. A rejected move does not collect interest. Requests exceeding available funds are capped to the available balance, as before. The balance, entries and history snapshot are committed together. Older moves that capitalized interest without an entry are not backfilled; their past transaction history may not fully explain the balance.
 
+## Transaction and adapter contract
+
+Balance, bond, allowance-scheduling and transaction-correction actions acquire SQLite's database-wide writer lock before reading and commit their ledger and history together. If a connection is already in a transaction, the action uses a savepoint and never commits the caller's work; the caller must commit or roll it back. SQLite itself can abort an entire transaction on severe errors or a `RAISE(ROLLBACK)` trigger, which no savepoint can prevent. A deferred transaction with an obsolete WAL snapshot cannot be upgraded and fails with SQLite's busy/snapshot error: roll back and retry the *whole outer transaction*, not just the action. A long-lived caller transaction holds its writer lock until it ends. Other administrative helpers retain their existing commit behavior and should not be mixed into caller-owned transactions.
+
+This protocol requires a real `sqlite3.Connection` (subclasses are supported), transaction state, `BEGIN IMMEDIATE`, savepoints, and SQLite-compatible writer locking. Other connection adapters are rejected before any action SQL. A hosted Durable Object SQL adapter must provide equivalent atomic outer transactions, nested rollback and serialized writer-before-read behavior, and correctly report transaction state; unsupported transaction statements must raise, never silently become no-ops. Adapt and test the hosted integration separately before using these root sources there. A no-op commit or transaction statement is not sufficient, and hosted compatibility has not been verified here.
+
 ## Configuration and data
 
 | Variable | Default | Meaning |
