@@ -158,6 +158,37 @@ class FoundationTest(unittest.TestCase):
                 else: self.svc.mutate('g', 'gift', [1, 1])
         self.assertEqual(tuple(self.storage.db.execute('SELECT principal_cents,payout_cents,collected FROM bonds').fetchone()), before)
 
+    def test_reversed_bond_dates_fail_closed_without_any_writes(self):
+        import bank
+        self.svc.mutate('kid', 'add_kid', ['Kid'])
+        self.svc.mutate('bond', 'invest', [1, '1mo', 100])
+        # Mature in the past, but purchased in the future: all values are bounded.
+        now = bank.now_ts(self.storage.db)
+        self.storage.db.execute('UPDATE bonds SET buy_ts=?, mature_ts=?', (now + 100, now - 100))
+        before = list(self.storage.db.iterdump())
+        # Demonstrate the inherited bank would credit this corrupt bond as mature.
+        oracle = sqlite3.connect(':memory:')
+        self.addCleanup(oracle.close)
+        self.storage.db.backup(oracle)
+        oracle.row_factory = sqlite3.Row
+        wallet = oracle.execute('SELECT wallet_cents FROM kids').fetchone()[0]
+        payout = oracle.execute('SELECT payout_cents FROM bonds').fetchone()[0]
+        bank.collect_rewards(oracle, 1, 'invest')
+        self.assertEqual(oracle.execute('SELECT wallet_cents FROM kids').fetchone()[0], wallet + payout)
+        self.assertEqual(oracle.execute('SELECT collected FROM bonds').fetchone()[0], 1)
+        for action in ('read', 'collect', 'gift'):
+            with self.subTest(action=action), self.assertRaisesRegex(ValueError, 'safe limits'):
+                if action == 'read': self.svc.read('kids', [])
+                elif action == 'collect': self.svc.mutate('rejected', 'collect_rewards', [1, 'invest'])
+                else: self.svc.mutate('rejected-gift', 'gift', [1, 1])
+            self.assertEqual(list(self.storage.db.iterdump()), before)
+
+    def test_equal_bond_dates_remain_valid(self):
+        self.svc.mutate('kid', 'add_kid', ['Kid'])
+        self.svc.mutate('bond', 'invest', [1, '1mo', 100])
+        self.storage.db.execute('UPDATE bonds SET mature_ts=buy_ts')
+        self.svc.read('kids', [])
+
     def test_collection_post_guard_rolls_back(self):
         import bank
         self.svc.mutate('kid', 'add_kid', ['Kid'])

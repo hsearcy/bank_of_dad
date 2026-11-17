@@ -47,7 +47,8 @@ These limits deliberately favor rejection over precision loss and do not alter t
 self-hosted bank. Inputs and every stored individual balance, signed ledger amount,
 history amount and bond principal/payout must be integer cents of magnitude at most
 1,000,000,000 ($10 million); balances and bond amounts must be nonnegative.
-Bond payout must be at least principal, even before maturity or if collected. Each
+Bond payout must be at least principal, and maturity must not precede purchase,
+even before maturity or if collected. Each
 child's owned total, each pending reward component and combined pending total must
 also be between 0 and that ceiling, both before and after every action. Thus an
 otherwise valid gift, accrual, transfer, or investment may be rejected. Interest

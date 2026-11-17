@@ -171,6 +171,13 @@ def main():
                 call(port, 'fixture_bad_bond', family='bad-bond')
                 for action, args in [('read', ['kids', []]), ('collect_rewards', [1]), ('gift', [1, 1])]:
                     assert 'safe limits' in call(port, action, args, 'bad', 'bad-bond', status=500)['error']
+                call(port, 'add_kid', ['Reversed bond'], 'kid', 'reversed-bond')
+                call(port, 'invest', [1, '1mo', 100], 'bond', 'reversed-bond')
+                call(port, 'fixture_reversed_bond', family='reversed-bond')
+                before_corrupt = call(port, 'fixture_full_snapshot', family='reversed-bond')['result']
+                for action, args in [('read', ['kids', []]), ('collect_rewards', [1, 'invest']), ('gift', [1, 1])]:
+                    assert 'safe limits' in call(port, action, args, 'rejected', 'reversed-bond', status=500)['error']
+                    assert call(port, 'fixture_full_snapshot', family='reversed-bond')['result'] == before_corrupt
                 assert not (base / 'forbidden.db').exists()
                 print('PASS synthetic DO: SQLite oracle, rollback after inner commit, family isolation, restart, concurrent writes and retry')
             except BaseException:

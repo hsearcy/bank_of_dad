@@ -37,6 +37,16 @@ class SyntheticBank(FamilyBank):
                     c.execute('UPDATE bonds SET payout_cents=principal_cents-1, mature_ts=3999999999 WHERE kid_id=1')
                     return True
                 result = self.service._transaction(bad)
+            elif action == 'fixture_reversed_bond':
+                def reversed_bond(c):
+                    c.execute('UPDATE bonds SET buy_ts=1700000100, mature_ts=1699999900 WHERE kid_id=1')
+                    return True
+                result = self.service._transaction(reversed_bond)
+            elif action == 'fixture_full_snapshot':
+                def snapshot_all(c):
+                    tables = ('hosted_schema', 'kids', 'bonds', 'history', 'transactions', 'settings', 'hosted_operations', 'sqlite_sequence')
+                    return {table: c.execute('SELECT * FROM ' + table + ' ORDER BY rowid').fetchall() for table in tables}
+                result = self.service._transaction(snapshot_all)
             elif action == 'fail_collect':
                 def fail_collect(c):
                     bank.collect_rewards(c, 1)
