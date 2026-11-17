@@ -11,10 +11,10 @@ Requires Python 3, Node.js (verified with 26.8.1), npm, and a writable scratch
 also download runtime components. No Cloudflare login is required.
 
 ```sh
-cd /home/ares/git/bod-python-cloud/cloud-python-spike
+cd cloud-python-spike
 npm ci --ignore-scripts
-TMPDIR=/home/ares/.hermes/cache/scratch python3 test_spike.py
-TMPDIR=/home/ares/.hermes/cache/scratch python3 test_harness.py
+TMPDIR="${TMPDIR:-/tmp}" python3 test_spike.py
+TMPDIR="${TMPDIR:-/tmp}" python3 test_harness.py
 ```
 
 Wrangler is pinned at 4.163.0 with its dependency tree in `package-lock.json`;
@@ -44,8 +44,8 @@ To repeat the parallel full-suite check (each process has its own scratch state)
 
 ```sh
 for round in 1 2; do
-  TMPDIR=/home/ares/.hermes/cache/scratch python3 test_spike.py & a=$!
-  TMPDIR=/home/ares/.hermes/cache/scratch python3 test_spike.py & b=$!
+  TMPDIR="${TMPDIR:-/tmp}" python3 test_spike.py & a=$!
+  TMPDIR="${TMPDIR:-/tmp}" python3 test_spike.py & b=$!
   wait "$a"; sa=$?
   wait "$b"; sb=$?
   printf 'round %s: %s %s\n' "$round" "$sa" "$sb"
