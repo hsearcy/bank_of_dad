@@ -106,6 +106,8 @@ class RecoveryAuthorization(FamilyAuthorization):
         # Override the v1 helper: inheriting it would silently bypass recovery.
         if c is not self.bank.conn or not c._active:
             raise RuntimeError('active bank transaction required')
+        if type(self) is not RecoveryAuthorization and not self.bank._combined_mutation:
+            raise RuntimeError('recovery coordinator required')
         issuer, subject = self._auth(c, family, token)
         self._valid_id(operation_id)
         payload = self.bank._validate(_MUTATIONS, action, args)
@@ -122,8 +124,17 @@ class RecoveryAuthorization(FamilyAuthorization):
             return json.loads(existing['result']), True
         if c.execute('SELECT operation_id FROM local_recovery WHERE issuer=? AND subject=? AND acknowledged=0', (issuer, subject)).fetchone():
             raise ValueError('unacknowledged operation')
-        with c._authorized_bank():
-            result = self.bank._mutate(c, operation_id, action, args)
+        # Only the exact recovery-only implementation may enable this guard.
+        # The combined subclass enables it in its outer revision coordinator.
+        recovery_only = type(self) is RecoveryAuthorization
+        if recovery_only:
+            self.bank._combined_mutation = True
+        try:
+            with c._authorized_bank():
+                result = self.bank._mutate(c, operation_id, action, args)
+        finally:
+            if recovery_only:
+                self.bank._combined_mutation = False
         c.execute('INSERT INTO local_operations VALUES (?, ?, ?)', (operation_id, issuer, subject))
         c.execute('INSERT INTO local_recovery VALUES (?, ?, ?, 0)', (operation_id, issuer, subject))
         return result, False

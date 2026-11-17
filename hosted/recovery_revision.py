@@ -26,6 +26,9 @@ class RecoveryRevisionAuthorization(RecoveryAuthorization):
         digest = hashlib.sha256(json.dumps(catalog, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
         if digest != _CATALOG_SHA256:
             raise RuntimeError('unsupported combined schema; no migration available')
+        hosted = c.execute('SELECT version FROM hosted_schema').fetchall()
+        if len(hosted) != 1 or type(hosted[0]['version']) is not int or hosted[0]['version'] != 1:
+            raise RuntimeError('invalid hosted schema marker')
         marker = c.execute('SELECT version, family FROM local_auth_schema').fetchall()
         if len(marker) != 1 or type(marker[0]['version']) is not int or marker[0]['version'] != 3 or marker[0]['family'] != family:
             raise PermissionError('denied')

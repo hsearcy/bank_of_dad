@@ -222,13 +222,17 @@ class FamilyService:
         self._initialize(conn)
         # The combined fixture must exclusively enter through its recovery and
         # revision coordinator. This is a misuse guard, not a Python sandbox.
-        marker = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='local_auth_schema'").fetchone()
-        combined = False
-        if marker:
-            versions = conn.execute('SELECT version FROM local_auth_schema').fetchall()
-            combined = any(row['version'] == 3 for row in versions)
-        if combined and not self._combined_mutation:
-            raise RuntimeError('combined family requires recovery revision coordinator')
+        objects = conn.execute("SELECT type, name, tbl_name FROM sqlite_master").fetchall()
+        names = {r['name'] for r in objects}
+        recovery_artifacts = any(r['name'].startswith(('local_recovery', 'fixture_revision', 'sqlite_autoindex_local_recovery'))
+                                 or r['tbl_name'] in ('local_recovery', 'fixture_revision') for r in objects)
+        local_artifacts = any(r['name'].startswith(('local_', 'sqlite_autoindex_local_')) for r in objects)
+        versions = conn.execute('SELECT version FROM local_auth_schema').fetchall() if 'local_auth_schema' in names else []
+        valid_marker = len(versions) == 1 and type(versions[0]['version']) is int and versions[0]['version'] in (1, 2, 3)
+        if (local_artifacts and not valid_marker) or (recovery_artifacts and not self._combined_mutation):
+            raise RuntimeError('invalid or protected authorization schema; recovery coordinator required')
+        if valid_marker and versions[0]['version'] != 1 and not self._combined_mutation:
+            raise RuntimeError('family requires recovery coordinator')
         self._check_state(conn)
         self._require_child(conn, action, args)
         row = conn.execute('SELECT payload, result FROM hosted_operations WHERE operation_id=?', (operation_id,)).fetchone()

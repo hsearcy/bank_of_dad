@@ -73,7 +73,11 @@ class RevisionFixture:
             self.auth._auth(c, family, token)
             revision = self._revision(c)
             before = domain_rows(c)
-            result, replay = self.auth._mutate_in_transaction(c, family, token, operation_id, action, args)
+            self.auth.bank._combined_mutation = True
+            try:
+                result, replay = self.auth._mutate_in_transaction(c, family, token, operation_id, action, args)
+            finally:
+                self.auth.bank._combined_mutation = False
             changed = not replay and domain_rows(c) != before
             if fault == 'before_revision':
                 raise RuntimeError('synthetic fault before revision')
