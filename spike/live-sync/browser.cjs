@@ -36,17 +36,24 @@ const assert=require('node:assert/strict');
   assert.equal((await history()).length,2);
   await b.waitForFunction(()=>document.querySelector('#balance').textContent==='607');
   await b.evaluate(()=>disconnect());
-  await b.waitForFunction(()=>socket.readyState===WebSocket.CLOSED);
+  await b.waitForFunction(()=>window.socket.readyState===WebSocket.CLOSED);
   await a.evaluate(()=>gift('offline',3));
   await b.evaluate(([f,t])=>connect(f,t),[F,ta[1]]);
   assert.equal(await balance(b),610);
+  const beforeDistinct=await Promise.all([a,b].map(p=>p.evaluate(()=>messages.length)));
   await Promise.all([a.evaluate(()=>gift('parallel-a',5)),b.evaluate(()=>gift('parallel-b',6))]);
   await a.waitForFunction(()=>document.querySelector('#balance').textContent==='621');
   await b.waitForFunction(()=>document.querySelector('#balance').textContent==='621');
+  await Promise.all([a,b].map((p,i)=>p.waitForFunction(n=>messages.length>=n+2,beforeDistinct[i])));
+  assert.deepEqual(await Promise.all([a,b].map(p=>p.evaluate(()=>messages.length))),beforeDistinct.map(n=>n+2));
   const priorRows=(await history()).length;
+  const beforeConcurrent=await Promise.all([a,b].map(p=>p.evaluate(()=>messages.length)));
   await Promise.all([a.evaluate(()=>gift('same-concurrent',1)),b.evaluate(()=>gift('same-concurrent',1))]);
   await b.waitForFunction(()=>document.querySelector('#balance').textContent==='622');
   assert.equal((await history()).length,priorRows+1);
+  await Promise.all([a,b].map((p,i)=>p.waitForFunction(n=>messages.length>=n+1,beforeConcurrent[i])));
+  await new Promise(r=>setTimeout(r,300));
+  assert.deepEqual(await Promise.all([a,b].map(p=>p.evaluate(()=>messages.length))),beforeConcurrent.map(n=>n+1));
   await a.evaluate(([f,t])=>api('revoke',{family:f,token:t}),[F,ta[1]]);
   await b.waitForFunction(()=>socket.readyState===WebSocket.CLOSED);
   assert.equal(await b.evaluate(([f,t])=>api('read',{family:f,token:t}).then(()=>false,()=>true),[F,ta[1]]),true);
@@ -59,11 +66,69 @@ const assert=require('node:assert/strict');
   await a.waitForFunction(()=>document.querySelector('#balance').textContent==='624');
   assert.equal(await b.evaluate(()=>messages.length),count);
   assert.equal(await c.evaluate(()=>messages.length),0);
+  // Exercise each actual authorized Python mutation and exact event count.
+  await c.evaluate(([family,token])=>api('allowance_due',{family,token}),[G,tb[0]]);
+  const cases=[
+   ['add_kid',['Extra'],true], ['gift',[1,100],true],
+   ['save',[1,10],[true,'Saved!']], ['withdraw',[1,1],[true,'Done!']],
+   ['spend',[1,1],[true,'Spent!']], ['invest',[1,'1mo',4],[true,'Locked in!']],
+   ['collect_rewards',[1,'allowance'],300]
+  ];
+  const mutate=(op,action,args)=>c.evaluate(({family,token,op,action,args})=>api('mutate',{family,token,op,action,args}),{family:G,token:tb[0],op,action,args});
+  let gc=await c.evaluate(()=>messages.length);
+  for(const [action,args,expected] of cases){
+   assert.deepEqual(await mutate('matrix-'+action,action,args),expected);
+   await c.waitForFunction(n=>messages.length===n,gc+1); gc++;
+   assert.deepEqual(await mutate('matrix-'+action,action,args),expected);
+  }
+  assert.deepEqual(await mutate('bad-withdraw','withdraw',[2,1]),[false,'Nothing to take out']);
+  assert.equal(await mutate('empty-collect','collect_rewards',[1,'allowance']),0);
+  assert.equal(await c.evaluate(({family,token})=>api('mutate',{family,token,op:'matrix-gift',action:'gift',args:[1,101]}).then(()=>false,()=>true),{family:G,token:tb[0]}),true);
+  await new Promise(r=>setTimeout(r,300));
+  assert.equal(await c.evaluate(()=>messages.length),gc);
+  const gKids=await c.evaluate(([family,token])=>api('read',{family,token}),[G,tb[0]]);
+  assert.equal(gKids.length,2);
+  assert.deepEqual([gKids[0].wallet_cents,gKids[0].savings_cents,gKids[0].invest_cents],[886,9,4]);
+  assert.deepEqual(await mutate('zero-bond','invest',[2,'1mo',10]),[true,'Locked in!']);
+  await c.waitForFunction(n=>messages.length===n,gc+1); gc++;
+  await c.evaluate(([family,token])=>api('mature_zero',{family,token}),[G,tb[0]]);
+  assert.equal(await mutate('zero-gain','collect_rewards',[2,'invest']),0);
+  await c.waitForFunction(n=>messages.length===n,gc+1); gc++;
+  assert.equal(await mutate('zero-gain','collect_rewards',[2,'invest']),0);
+  await new Promise(r=>setTimeout(r,300));
+  assert.equal(await c.evaluate(()=>messages.length),gc);
+  const secondKid=(await c.evaluate(([family,token])=>api('read',{family,token}),[G,tb[0]]))[1];
+  assert.deepEqual([secondKid.wallet_cents,secondKid.invest_cents],[500,0]);
   await c.evaluate(([f,t])=>api('expire',{family:f,token:t}),[G,tb[0]]);
   await c.waitForFunction(()=>socket.readyState===WebSocket.CLOSED);
   assert.equal(await c.evaluate(([f,t])=>api('read',{family:f,token:t}).then(()=>false,()=>true),[G,tb[0]]),true);
+  assert.equal(await c.evaluate(socketRejected,[G,tb[0]]),true);
+  const expiredCount=await c.evaluate(()=>messages.length);
+  assert.equal(await a.evaluate(([family,token])=>api('gift',{family,token,op:'b-after-expiry',cents:1}),[G,tb[1]]),true);
+  await new Promise(r=>setTimeout(r,300));
+  assert.equal(await c.evaluate(()=>messages.length),expiredCount);
   await a.locator('#gift').click();
   await a.waitForFunction(()=>document.querySelector('#balance').textContent==='634');
+  // Hold an actual A snapshot, switch this same page to B, then release it.
+  await a.evaluate(async()=>{window.oldSocket=socket;window.oldHandler=socket.onmessage;const original=window.api;let release;window.gate=new Promise(r=>release=r);window.releaseOld=release;window.held=false;window.api=async(method,data)=>{const result=await original(method,data);if(method==='read'&&!window.held){window.held=true;await window.gate}return result};window.oldRefresh=refresh()});
+  await a.waitForFunction(()=>window.held);
+  await a.evaluate(([f,t])=>connect(f,t),[G,tb[1]]);
+  await a.waitForFunction(()=>oldSocket.readyState===WebSocket.CLOSED);
+  assert.equal(await balance(a),887);
+  await a.evaluate(async()=>{releaseOld();await oldRefresh});
+  assert.equal(await balance(a),887);
+  const switched=await a.evaluate(()=>({messages:messages.length,refreshes:refreshes.length}));
+  await a.evaluate(()=>oldHandler({data:'queued stale event'}));
+  await b.evaluate(([family,token])=>api('gift',{family,token,op:'after-switch',cents:9}),[F,ta[0]]);
+  await new Promise(r=>setTimeout(r,400));
+  assert.deepEqual(await a.evaluate(()=>({messages:messages.length,refreshes:refreshes.length})),switched);
+  assert.equal(await balance(a),887);
+  await a.evaluate(()=>gift('b-still-functional',3));
+  await a.waitForFunction(()=>document.querySelector('#balance').textContent==='890');
+  await a.evaluate(()=>{window.logoutSocket=socket});
+  await a.locator('#logout').click();
+  await a.waitForFunction(()=>logoutSocket.readyState===WebSocket.CLOSED);
+  assert.equal(await a.locator('#balance').textContent(),'not connected');
   console.log('PASS real Chromium contexts: Python DO WebSocket, actual bank values, retry, rollback, concurrent gifts, reconnect, isolation, revocation, expiry');
  } finally {await Promise.all(browsers.map(browser=>browser.close()))}
 })().catch(e=>{console.error(e);process.exitCode=1});

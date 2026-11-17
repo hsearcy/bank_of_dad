@@ -5,17 +5,18 @@ const html = `<!doctype html><meta charset="utf-8"><title>Local synthetic live s
 <button id="setup">Bootstrap empty family (once)</button><p>Fixture grants: <output id="grants">none</output></p>
 <label>Fixture grant <input id="token" size="50"></label><button id="connect">Connect</button>
 <p>Wallet cents: <output id="balance">not connected</output></p><output id="status"></output>
-<button id="gift">Gift 10 cents</button><script>
-let family, token, socket; window.messages=[];
+<button id="gift">Gift 10 cents</button><button id="logout">Logout</button><script>
+let family, token, socket, generation=0, refreshGeneration=0, cancelConnect; window.messages=[]; window.refreshes=[];
 window.api=async(method, data={})=>{const r=await fetch('/api',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({method,...data})});const j=await r.json();if(!r.ok)throw Error(j.error);return j.result};
-window.refresh=async()=>{const kids=await api('read',{family,token});document.querySelector('#balance').textContent=kids[0].wallet_cents;return kids};
-window.connect=async(f,t)=>{family=f;token=t;await refresh();socket=new WebSocket('ws://'+location.host+'/socket?family='+encodeURIComponent(f)+'&token='+encodeURIComponent(t));window.socket=socket;socket.onmessage=async e=>{messages.push(e.data);await refresh()};await new Promise((resolve,reject)=>{socket.onopen=resolve;socket.onerror=reject});await refresh()};
-window.disconnect=()=>socket.close();
+window.refresh=async()=>{if(!token)return;const g=generation, n=++refreshGeneration, f=family, t=token;window.refreshes.push(f);const kids=await api('read',{family:f,token:t});if(g===generation && n===refreshGeneration)document.querySelector('#balance').textContent=kids[0].wallet_cents;return kids};
+window.disconnect=()=>{generation++;refreshGeneration++;if(cancelConnect){cancelConnect();cancelConnect=null}if(socket){socket.onmessage=socket.onopen=socket.onerror=socket.onclose=null;socket.close();socket=null}family=token=null;document.querySelector('#balance').textContent='not connected';document.querySelector('#status').textContent='disconnected'};
+window.connect=async(f,t)=>{disconnect();family=f;token=t;const g=generation;await refresh();if(g!==generation)return;const ws=new WebSocket('ws://'+location.host+'/socket?family='+encodeURIComponent(f)+'&token='+encodeURIComponent(t));socket=ws;window.socket=ws;ws.onmessage=e=>{if(g!==generation || socket!==ws)return;messages.push(e.data);refresh().catch(()=>{})};await new Promise((resolve,reject)=>{cancelConnect=()=>reject(Error('connection cancelled'));ws.onopen=()=>{cancelConnect=null;resolve()};ws.onerror=()=>{cancelConnect=null;reject(Error('connection failed'))};ws.onclose=()=>{cancelConnect=null;reject(Error('connection closed'))}});if(g===generation)await refresh()};
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible' && token) refresh().catch(()=>{});});
 window.gift=async(op,cents=10,fault=false)=>api('gift',{family,token,op,cents,fault});
 document.querySelector('#setup').onclick=async()=>{try {const grants=await api('setup',{family:document.querySelector('#family').value});document.querySelector('#grants').textContent=grants.join(' | ');document.querySelector('#token').value=grants[0];}catch(e){document.querySelector('#status').textContent=e.message}};
-document.querySelector('#connect').onclick=async()=>{try {await connect(document.querySelector('#family').value,document.querySelector('#token').value);document.querySelector('#status').textContent='connected'}catch(e){document.querySelector('#status').textContent='denied'}};
+document.querySelector('#connect').onclick=async()=>{const pending=connect(document.querySelector('#family').value,document.querySelector('#token').value), g=generation;try {await pending;if(g===generation)document.querySelector('#status').textContent='connected'}catch(e){if(g===generation)document.querySelector('#status').textContent='denied'}};
 document.querySelector('#gift').onclick=()=>gift(crypto.randomUUID()).catch(e=>document.querySelector('#status').textContent=e.message);
+document.querySelector('#logout').onclick=()=>disconnect();
 </script>`;
 export default {async fetch(request,env){
   const u=new URL(request.url);
@@ -33,9 +34,12 @@ export default {async fetch(request,env){
     switch(b.method){
       case 'setup': result=await stub.fixture_setup(b.family);break;
       case 'read': result=await stub.read(b.family,b.token,b.history ? 'transactions' : 'kids',b.history ? [1] : []);break;
-      case 'gift': result=await stub.fixture_gift(b.family,b.token,b.op,b.cents,!!b.fault);break;
+      case 'gift': result=await stub.fixture_mutate(b.family,b.token,b.op,'gift',[1,b.cents,'synthetic'],!!b.fault);break;
+      case 'mutate': result=await stub.fixture_mutate(b.family,b.token,b.op,b.action,b.args,!!b.fault);break;
       case 'revoke': result=await stub.fixture_revoke(b.family,b.token);break;
       case 'expire': result=await stub.fixture_expire(b.family,b.token);break;
+      case 'allowance_due': result=await stub.fixture_allowance_due(b.family,b.token);break;
+      case 'mature_zero': result=await stub.fixture_mature_zero(b.family,b.token);break;
       default: throw Error('invalid method');
     }
     return Response.json({result});

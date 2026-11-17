@@ -68,14 +68,35 @@ class SyntheticLiveBank(FamilyBank):
         self.notify(False)
         return True
 
-    async def fixture_gift(self, family, token, operation_id, cents, fault=False):
+    async def fixture_allowance_due(self, family, token):
+        import time
+        def op(c):
+            self._authorization._auth(c, family, token)
+            c.execute('UPDATE kids SET allowance_anchor_ts=? WHERE id=1', (int(time.time()) - 14 * 86400,))
+        self._authorization.bank._transaction(op)
+        return True
+
+    async def fixture_mature_zero(self, family, token):
+        import time
+        def op(c):
+            self._authorization._auth(c, family, token)
+            past = int(time.time()) - 1
+            c.execute('UPDATE bonds SET buy_ts=?, mature_ts=?, payout_cents=principal_cents WHERE kid_id=2', (past, past))
+        self._authorization.bank._transaction(op)
+        return True
+
+    async def fixture_mutate(self, family, token, operation_id, action, args, fault=False):
         a = self._authorization
         # No await between checking idempotency, committing, and notifying: the
         # DO serially executes this synchronous sequence. Result is still checked.
+        def bank_rows(c):
+            return [c.execute('SELECT * FROM ' + table + ' ORDER BY rowid').fetchall()
+                    for table in ('kids', 'bonds', 'transactions', 'history')]
         def exists(c):
             a._auth(c, family, token)
-            return bool(c.execute('SELECT operation_id FROM local_operations WHERE operation_id=?', (operation_id,)).fetchone())
-        prior = a.bank._transaction(exists)
+            prior = bool(c.execute('SELECT operation_id FROM local_operations WHERE operation_id=?', (operation_id,)).fetchone())
+            return prior, bank_rows(c) if action == 'collect_rewards' and not prior else None
+        prior, before = a.bank._transaction(exists)
         original = a.bank.conn.execute
         if fault:
             def fail(sql, params=()):
@@ -85,12 +106,20 @@ class SyntheticLiveBank(FamilyBank):
                 return result
             a.bank.conn.execute = fail
         try:
-            result = a.mutate(family, token, operation_id, 'gift', [1, cents, 'synthetic'])
+            result = a.mutate(family, token, operation_id, action, args)
         finally:
             a.bank.conn.execute = original
-        if not prior and result is True:
+        # A zero-gain matured bond returns 0 but transfers principal and writes
+        # history. Compare bank rows for collection, not its numeric result.
+        success = result[0] is True if isinstance(result, list) else bool(result)
+        if not prior and action == 'collect_rewards' and not success:
+            success = a.bank._transaction(bank_rows) != before
+        if not prior and success:
             self.notify(True)
         return _rpc_result(result)
+
+    async def mutate(self, family, token, operation_id, action, args):
+        return await self.fixture_mutate(family, token, operation_id, action, args)
 
 class Default(WorkerEntrypoint):
     pass
