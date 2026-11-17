@@ -79,7 +79,7 @@ export class LocalVerifier {
       if (claims.iss !== ISSUER || claims.aud !== CLIENT || typeof claims.sub !== 'string' || !claims.sub) throw Error();
       if (Object.hasOwn(claims, 'azp') && claims.azp !== CLIENT) { this.observe('reject_azp'); throw Error(); }
       // Synthetic policy: at most 120 seconds old plus 30 seconds skew, or 30 seconds ahead.
-      const now = Math.floor(Date.now() / 1000);
+      const now = Math.floor(this.now() / 1000);
       if (typeof claims.iat !== 'number' || !Number.isFinite(claims.iat) || claims.iat < now - 150 || claims.iat > now + 30) {
         this.observe('reject_iat'); throw Error();
       }

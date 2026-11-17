@@ -28,7 +28,12 @@ equal the client ID. After library validation, the synthetic issuance-time polic
 accepts a finite numeric `iat` from 150 seconds before through 30 seconds after
 the current whole Unix second, inclusive: a 120-second freshness window plus 30
 seconds of assumed clock skew in either direction. This is a conservative test
-choice, not a production policy decision. The fake uses `jose` to generate ephemeral keys and sign fake tokens;
+choice, not a production policy decision. Transaction expiry and this `iat` policy
+share the verifier's `now` clock, which defaults to `Date.now`. An injected clock
+is test-only and does not alter the library's clock: the pinned library validates
+`exp` using global `Date.now` with its default 30-second tolerance. The fake issuer
+also uses global time. Skewed-clock tests explicitly exercise this split; do not
+interpret injection as controlling all token or JWKS validation. The fake uses `jose` to generate ephemeral keys and sign fake tokens;
 there is no hand-rolled JWT cryptography. Results expose only issuer + subject,
 not email. No lookup, auto-linking or account creation exists. Errors are generic;
 no application logging is present. Test runner output must not dump URLs/tokens.
@@ -43,8 +48,11 @@ caches JWKS. A new `kid` fails without refresh while the cached set is less than
 60 seconds old; at age 60 a new `kid` triggers refresh. A retired key already in
 the cache can still validate a correctly signed token until a refresh removes it:
 without an earlier refresh, the test accepts it at age 299 seconds and rejects it
-after refresh at age 300 seconds. Ages are whole seconds since JWKS fetch, not
-since retirement. An unknown key after the cooldown can trigger an earlier refresh.
+after refresh at age 300 seconds. The library compares whole Unix seconds for the
+fetch and current time, not exact elapsed duration. Depending on the fractional
+second of the fetch, a threshold can occur almost one second earlier than the
+nominal elapsed duration; the tests start on exact second boundaries. Ages are
+since JWKS fetch, not since retirement. An unknown key after the cooldown can trigger an earlier refresh.
 This demonstrates a stale-key acceptance and new-key availability window, not
 instant revocation, real-provider rotation, or a production mitigation.
 

@@ -47,13 +47,15 @@ test('malformed and unknown JWKS rejected', async () => {
 });
 
 test('state isolation, expiry, replay and concurrent callback consumption', async () => {
-  let now = 1000; const { issuer, rp } = await setup({ now: () => now, ttl: 20 });
+  let now = Date.now(); const { issuer, rp } = await setup({ now: () => now, ttl: 20 });
   const url = await flow(rp, issuer);
   assert.deepEqual(await rp.callback(B, url), fail);
   const results = await Promise.all([rp.callback(A, url), rp.callback(A, url)]);
   assert.equal(results.filter(x => x.ok).length, 1);
   assert.deepEqual(await rp.callback(A, url), fail);
   const expired = await flow(rp, issuer); now += 20;
+  assert.deepEqual(await rp.callback(A, expired), fail);
+  now -= 20; // a restored expired transaction must not become usable after clock rollback
   assert.deepEqual(await rp.callback(A, expired), fail);
   const good = await flow(rp, issuer), bad = new URL(good); bad.searchParams.set('state', 'unknown');
   assert.deepEqual(await rp.callback(A, bad), fail);
@@ -79,6 +81,52 @@ test('literal callback allowlist, ambiguous callback parameters, generic errors'
   assert.deepEqual(await rp.callback(A, bad), fail);
   const other = new URL(u); other.hostname = 'localhost'; assert.deepEqual(await rp.callback(A, other), fail);
   assert.equal((await rp.callback(A, u)).ok, true);
+});
+
+test('malformed callbacks reject without consuming legitimate state', async () => {
+  for (const mutate of [
+    url => url.searchParams.append('code', 'duplicate'),
+    url => url.searchParams.set('error', 'synthetic-sensitive-error'),
+    url => { url.hash = '#synthetic-sensitive-fragment'; },
+    url => url.searchParams.append('state', 'duplicate'),
+  ]) {
+    const { issuer, rp } = await setup();
+    const valid = await flow(rp, issuer), bad = new URL(valid);
+    mutate(bad);
+    assert.deepEqual(await rp.callback(A, bad), fail);
+    assert.deepEqual(issuer.calls, { token: 0, jwks: 0 });
+    assert.deepEqual(await rp.callback(A, valid), { ok: true, identity: { issuer: ISSUER, subject: 'fake-parent-1' } });
+    assert.deepEqual(await rp.callback(A, valid), fail);
+  }
+});
+
+test('injected policy clock governs transaction expiry and iat, library expiry uses system clock', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1700000000000 });
+  let clock = Date.now() + 60000;
+  const events = []; const { issuer, rp } = await setup({ now: () => clock, ttl: 20000, observe: e => events.push(e) });
+  const globalSeconds = Date.now() / 1000;
+  // Library accepts these synthetic tokens; our policy rejects the future iat relative to its injected clock.
+  issuer.overrides.claims = { iat: globalSeconds + 91 };
+  assert.deepEqual(await rp.callback(A, await flow(rp, issuer)), fail);
+  assert.deepEqual(events.splice(0), ['verified_token', 'reject_iat']);
+  issuer.overrides.claims = { iat: globalSeconds + 90 };
+  assert.equal((await rp.callback(A, await flow(rp, issuer))).ok, true);
+  assert.deepEqual(events.splice(0), ['verified_token']);
+  issuer.overrides.claims = { iat: globalSeconds - 91 };
+  assert.deepEqual(await rp.callback(A, await flow(rp, issuer)), fail);
+  assert.deepEqual(events.splice(0), ['verified_token', 'reject_iat']);
+  issuer.overrides.claims = { iat: globalSeconds - 90 };
+  assert.equal((await rp.callback(A, await flow(rp, issuer))).ok, true);
+  assert.deepEqual(events.splice(0), ['verified_token']);
+  const expired = await flow(rp, issuer); clock += 20000;
+  assert.deepEqual(await rp.callback(A, expired), fail);
+  clock -= 20000;
+  assert.deepEqual(await rp.callback(A, expired), fail);
+  // The pinned library has a 30-second exp tolerance and uses Date.now, not the policy clock.
+  clock -= 120000;
+  issuer.overrides.claims = { iat: globalSeconds - 60, exp: globalSeconds - 31 };
+  assert.deepEqual(await rp.callback(A, await flow(rp, issuer)), fail);
+  assert.deepEqual(events, []);
 });
 
 test('extra front-channel tokens are not used as identity', async () => {
