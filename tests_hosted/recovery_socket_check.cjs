@@ -1,5 +1,6 @@
 // Disposable real WebSockets and fake identities; no production endpoint.
 const assert = require('node:assert/strict'), fs = require('node:fs'), http = require('node:http');
+const {isDeepStrictEqual} = require('node:util');
 const base=process.env.BASE_URL, checkpoint=process.env.CHECKPOINT, F='a'.repeat(32), G='b'.repeat(32);
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function call(method,args=[],object='family',status=200) {
@@ -17,18 +18,36 @@ async function denied(family,token,object='family') {
  await assert.rejects(socket(family,token,object),/socket denied/);
 }
 async function closed(w) { return Promise.race([w.closed,sleep(3000).then(()=>{throw Error('close timeout')})]); }
-function bookkeepingOnly(before,after) {
+function bookkeepingOnly(before,after,operation,action,args,result,subject) {
  assert.deepEqual(after.schema,before.schema);
  assert.deepEqual(Object.keys(after.tables).sort(),Object.keys(before.tables).sort());
- const allowed=new Set(['hosted_operations','local_operations','local_recovery']);
- for(const name of Object.keys(before.tables)) if(!allowed.has(name)) assert.deepEqual(after.tables[name],before.tables[name],name);
- for(const name of allowed) assert.notDeepEqual(after.tables[name],before.tables[name],name);
+ const text=value=>({type:'text',value}), integer=value=>({type:'integer',value});
+ const issuer=text('https://issuer.test'), owner=text(subject), id=text(operation);
+ const added={
+  hosted_operations:{operation_id:id,payload:text(JSON.stringify([action,args])),result:text(JSON.stringify(result))},
+  local_operations:{operation_id:id,issuer,subject:owner},
+  local_recovery:{operation_id:id,issuer,subject:owner,acknowledged:integer(0)}
+ };
+ for(const name of Object.keys(before.tables)) {
+  const rows=after.tables[name].slice();
+  if(Object.hasOwn(added,name)) {
+   const index=rows.findIndex(row=>isDeepStrictEqual(row,added[name]));
+   assert.notEqual(index,-1,`${name}: exact inserted row`); rows.splice(index,1);
+  }
+  assert.deepEqual(rows,before.tables[name],`${name}: existing rows unchanged`);
+ }
 }
 async function frames(w,n) {for(let i=0;i<30&&w.frames.length<n;i++) await sleep(20);await sleep(120);assert.equal(w.frames.length,n);assert.ok(w.frames.every(f=>f==='{"type":"invalidate"}'));}
 (async()=>{
  if(process.env.RESTART) {
   const old=JSON.parse(fs.readFileSync(checkpoint)); const t=await call('grant',[F]); const s=await socket(F,t);
-  assert.equal((await call('pending',[F,t])).operation_id,'lost'); assert.equal((await call('snapshot',[F,t])).revision,old.rev);
+  assert.equal((await call('pending',[F,t])).operation_id,'lost'); assert.deepEqual(await call('snapshot',[F,t]),old.snapshot);
+  assert.deepEqual(await call('outcome',[F,t,'send-fault']),old.sendOutcome);
+  const restartDb=await call('full_snapshot');
+  assert.equal(await call('mutate',[F,t,'send-fault','gift',[1,3]]),true);
+  assert.equal(await call('acknowledge',[F,t,'send-fault',true]),true);
+  assert.deepEqual(await call('full_snapshot'),restartDb); assert.deepEqual(await call('snapshot',[F,t]),old.snapshot);
+  assert.deepEqual(await call('outcome',[F,t,'send-fault']),old.sendOutcome); assert.equal((await call('pending',[F,t])).operation_id,'lost'); await frames(s,0);
   assert.equal(await call('mutate',[F,t,'lost','gift',[1,5]]),true); await frames(s,0);
   assert.equal(await call('acknowledge',[F,t,'lost',true]),true); await frames(s,1);
   assert.equal(await call('acknowledge',[F,t,'lost',true]),true); await frames(s,1);
@@ -59,7 +78,7 @@ async function frames(w,n) {for(let i=0;i<30&&w.frames.length<n;i++) await sleep
  assert.deepEqual(await call('snapshot',[F,a]),before); assert.equal((await call('pending',[F,a2])).operation_id,'false'); assert.equal(await call('pending',[F,p]),null);
  assert.equal(await call('outcome',[F,p,'false']),null); assert.equal((await call('outcome',[F,a,'false'])).result[0],false);
  const dbFalse=await call('full_snapshot');
- bookkeepingOnly(dbBeforeFalse,dbFalse); // All three operation/recovery tables intentionally change.
+ bookkeepingOnly(dbBeforeFalse,dbFalse,'false','withdraw',[1,1],[false,'Nothing to take out'],'owner');
  assert.equal(await call('acknowledge',[F,p,'false',[false,'Nothing to take out']],'family',400),'ValueError: unknown operation'); assert.deepEqual(await call('full_snapshot'),dbFalse);
  assert.deepEqual(await call('mutate',[F,a2,'false','withdraw',[1,1]]),[false,'Nothing to take out']); await counts(3);
  assert.deepEqual(await call('full_snapshot'),dbFalse);
@@ -68,7 +87,7 @@ async function frames(w,n) {for(let i=0;i<30&&w.frames.length<n;i++) await sleep
  assert.equal((await call('snapshot',[F,a])).revision,1);
  const dbBeforeNoop=await call('full_snapshot');
  assert.equal(await call('mutate',[F,p,'noop','collect_rewards',[1,'invest']]),0); await counts(5);
- const dbNoop=await call('full_snapshot'); bookkeepingOnly(dbBeforeNoop,dbNoop);
+ const dbNoop=await call('full_snapshot'); bookkeepingOnly(dbBeforeNoop,dbNoop,'noop','collect_rewards',[1,'invest'],0,'parent');
  assert.equal(await call('mutate',[F,p,'noop','collect_rewards',[1,'invest']]),0); assert.deepEqual(await call('full_snapshot'),dbNoop); await counts(5);
  assert.equal((await call('snapshot',[F,a])).revision,1); assert.equal((await call('pending',[F,p])).operation_id,'noop'); assert.equal(await call('pending',[F,a]),null);
  assert.equal(await call('acknowledge',[F,p,'noop',0]),true); await counts(6);
@@ -104,6 +123,6 @@ async function frames(w,n) {for(let i=0;i<30&&w.frames.length<n;i++) await sleep
  for(let i=0;i<200;i++){if(await call('gate')==='resumed') break;await sleep(25);if(i===199)throw Error('no response resume')}
  await frames(sa,11); assert.equal((await call('pending',[F,a])).operation_id,'lost');
  assert.equal(await call('mutate',[F,a,'lost','gift',[1,5]]),true); await frames(sa,11);
- fs.writeFileSync(checkpoint,JSON.stringify({rev:(await call('snapshot',[F,a])).revision}));
+ fs.writeFileSync(checkpoint,JSON.stringify({snapshot:await call('snapshot',[F,a]),sendOutcome:await call('outcome',[F,a,'send-fault'])}));
  [sa,sa2,sp,sb].forEach(w=>w.close()); console.log('PASS sockets, pending-only events, auth, rollback, lost response');
 })().catch(e=>{console.error(e);process.exit(1)});
