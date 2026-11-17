@@ -35,6 +35,31 @@ def main():
                         assert r.status == status, (method, r.status, data)
                         return data
                 tokens = json.loads(call('setup')['result']); token = tokens['active']
+                other_family = 'b' * 32
+                other = json.loads(call('setup', [other_family], object='other')['result'])
+                assert other['active'] != token
+                payload = {'nested': {'array': [None, True, False, 'Zoë 🐉', 0, -42, 1.25,
+                                                {'null': None, 'deeper': [[], {}, [False, None]]}]},
+                           'timestamp': 2_001_209_600, 'empty': '', 'nil': None}
+                echoed = call('echo', value=payload)['result']
+                # JSON comparison distinguishes booleans from numbers, unlike Python ==.
+                canonical = lambda x: json.dumps(x, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
+                assert canonical(echoed) == canonical(payload), echoed
+                assert call('mutate', [other_family, other['active'], 'other-add', 'add_kid',
+                                       ['Other', '🌙', '#654321']], object='other')['result'] is True
+                assert call('read', [other_family, other['active'], 'kids', []], object='other')['result'][0]['name'] == 'Other'
+                def both_snapshots():
+                    return (call('snapshot')['result'], call('snapshot', object='other')['result'])
+                isolated_before = both_snapshots()
+                for obj, family, wrong in [('other', other_family, token), ('synthetic', F, other['active'])]:
+                    for method, args in [('read', [family, wrong, 'kids', []]),
+                                         ('mutate', [family, wrong, 'cross', 'gift', [1, 10]])]:
+                        assert call(method, args, object=obj, status=400) == {'error': 'denied'}
+                        assert both_snapshots() == isolated_before
+                # Also prove family and token cannot be routed together to the other object.
+                for obj, family, secret in [('other', F, token), ('synthetic', other_family, other['active'])]:
+                    assert call('read', [family, secret, 'kids', []], object=obj, status=400) == {'error': 'denied'}
+                    assert both_snapshots() == isolated_before
                 def mutate(op, action, args):
                     return call('mutate', [F, token, op, action, args])['result']
                 def read(action, args):
@@ -54,7 +79,7 @@ def main():
                 assert {k: kid[k] for k in expected} == expected
                 assert type(kid['allowance_enabled']) is bool
                 assert all(type(kid[k]) is int for k in ('id', 'wallet_cents', 'savings_cents', 'pending_cents'))
-                assert type(kid['next_allowance_ts']) in (int, float)
+                assert type(kid['next_allowance_ts']) in (int, float) and kid['next_allowance_ts'] == 2_001_209_600
                 assert mutate('gift', 'gift', [1, 100, 'hello 🦊']) is True
                 assert mutate('save', 'save', [1, 10]) == [True, 'Saved!']
                 assert mutate('withdraw', 'withdraw', [1, 1]) == [True, 'Done!']
@@ -117,6 +142,9 @@ def main():
                     for secret in tokens.values(): assert secret not in json.dumps(response)
                     assert 'Traceback' not in json.dumps(response)
                     assert snap() == before
+                # Observe raw runtime behavior without returning exception text to HTTP.
+                assert call('read', [F, 'not-a-token', 'kids', []], status=400,
+                            diagnose_traceback=True) == {'error': 'denied', 'raw_has_traceback': True}
                 fault_args = [F, token, 'fault', 'gift', [1, 7, 'retry']]
                 assert call('fault', fault_args, status=400) == {'error':'injected_fault'}
                 assert snap() == before

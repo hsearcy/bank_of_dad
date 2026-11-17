@@ -103,16 +103,20 @@ Cloudflare runtime. Tests access no existing family DB.
 
 The separate JS RPC test runs two local Workers in one Wrangler process. A JS
 Worker directly invokes a Python `FamilyBank` subclass; the subclass adds only
-synthetic setup, snapshots and fault injection and is never deployable. It checks
+synthetic setup, echo, snapshots and fault injection and is never deployable. It checks
 both reads, all seven mutations including a funded allowance collection,
-JSON field/type preservation including nested values, null and Unicode, denials,
+JSON field/type preservation including a test-only JS-origin nested echo through
+the production output serializer, null, Unicode and a frozen exact timestamp;
+it checks two separately initialized family objects with cross-object denials,
 hidden methods, rollback/retry, and concurrent same/different operation IDs.
 Before explicit JSON conversion, JS saw Python dictionaries as empty objects;
 `to_js` alone also made Python `None` into JS `undefined`, dropping null fields.
 The production class now returns plain JSON values. This test uses disposable local
 storage only. Its loopback JS dispatcher categorizes exceptions without returning
 messages, secrets or stacks; it is test-only, not a secure gateway. Raw RPC errors
-can contain Python details, so a future real gateway must sanitize them itself.
+can include Python tracebacks, as observed by the local test, so a future real gateway
+must sanitize them itself. The echo tests selected JSON values, not support for
+arbitrary objects or a production echo method.
 There is still no real login, trusted bootstrap or deployed service.
 
 ## Before any real use

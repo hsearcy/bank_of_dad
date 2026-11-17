@@ -8,7 +8,8 @@ export default {
     try {
       let result;
       switch (body.method) {
-        case 'setup': result = await stub.fixture_setup(); break;
+        case 'setup': result = await stub.fixture_setup(...(body.args || [])); break;
+        case 'echo': result = await stub.fixture_echo(body.value); break;
         case 'snapshot': result = await stub.fixture_snapshot(); break;
         case 'read': result = await stub.read(...body.args); break;
         case 'mutate': result = await stub.mutate(...body.args); break;
@@ -28,6 +29,8 @@ export default {
         : text.includes('TypeError:') ? 'bad_signature'
         : text.includes('synthetic injected fault') ? 'injected_fault'
         : text.includes('ValueError:') ? 'invalid_request' : 'rpc_error';
+      // Expose only a boolean in this local diagnostic, never the raw exception.
+      if (body.diagnose_traceback) return Response.json({error: category, raw_has_traceback: text.includes('Traceback')}, {status: 400});
       return Response.json({error: category}, {status: 400});
     }
   }
