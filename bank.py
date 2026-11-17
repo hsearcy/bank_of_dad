@@ -32,6 +32,10 @@ def _serialized_accrual_action(fn):
     @wraps(fn)
     def run(conn, *args, **kwargs):
         if not isinstance(conn, sqlite3.Connection):
+            # Explicit hosted integration, not a duck-typed SQLite substitute.
+            from hosted.adapter import Connection as HostedConnection
+            if type(conn) is HostedConnection:
+                return conn._bank_action(fn, args, kwargs)
             raise TypeError("bank actions require a sqlite3.Connection; adapters need an equivalent transaction implementation")
         key = id(conn)
         with _active_connections_lock:

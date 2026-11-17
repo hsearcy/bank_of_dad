@@ -1,19 +1,17 @@
-"""DO boundary: one instance and SQLite storage per family.
+"""Experimental DO boundary: no HTTP handler or real identity integration.
 
-This class deliberately defines no HTTP handler. A future trusted Worker must
-resolve an authenticated, authorized family to its DO binding before calling it.
+A trusted caller must select the family DO and provision grants internally.
 """
 from workers import DurableObject
-from .service import FamilyService
-
+from .family_auth import FamilyAuthorization
 
 class FamilyBank(DurableObject):
     def __init__(self, ctx, env):
         super().__init__(ctx, env)
-        self.service = FamilyService(ctx.storage)
+        self._authorization = FamilyAuthorization(ctx.storage)
 
-    async def mutate(self, operation_id, action, args):
-        return self.service.mutate(operation_id, action, args)
+    async def read(self, family, token, action, args):
+        return self._authorization.read(family, token, action, args)
 
-    async def read(self, action, args):
-        return self.service.read(action, args)
+    async def mutate(self, family, token, operation_id, action, args):
+        return self._authorization.mutate(family, token, operation_id, action, args)

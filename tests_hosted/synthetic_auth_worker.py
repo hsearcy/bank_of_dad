@@ -28,6 +28,10 @@ class SyntheticAuth(DurableObject):
                 result = auth.bank._transaction(lambda c: c.execute(
                     'UPDATE kids SET allowance_anchor_ts=? WHERE id=1',
                     (int(time.time()) - 14 * 86400 - 60,)).fetchall())
+            elif action == 'seed_interest':
+                result = auth.bank._transaction(lambda c: c.execute(
+                    'UPDATE kids SET savings_accrued_ts=? WHERE id=1',
+                    (int(time.time()) - 7 * 86400,)).fetchall())
             elif action == 'fault':
                 original = auth.bank.conn.execute
                 def fail(sql, params=()):

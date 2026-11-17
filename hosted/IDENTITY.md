@@ -49,8 +49,8 @@ subsequent bank-object action are not one transaction. A concurrent revocation
 or membership change may race after the check. There is no tested fencing,
 serialization, authorization-to-bank routing or atomic cross-object guarantee;
 do not connect the directory to the bank as production authorization yet.
-The existing `FamilyBank` methods themselves remain unauthenticated internal
-operations. RPC serialization across Workers is also untested. Directory
+`FamilyBank` now checks family-local grants; these are not directory sessions.
+Basic local synthetic cross-DO RPC is tested, not deployed behavior. Directory
 initialization rejects nonempty unversioned storage and unknown versions; no
 schema upgrade or corrupted-data remediation is provided.
 

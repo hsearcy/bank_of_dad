@@ -60,6 +60,13 @@ class FamilyAuthorization:
         return self.bank._transaction(op)
 
     def _auth(self, c, family, token, owner=False):
+        try:
+            return self._auth_checked(c, family, token, owner)
+        except BaseException:
+            c._poisoned = True
+            raise
+
+    def _auth_checked(self, c, family, token, owner=False):
         self._check(c, family)
         row = c.execute("SELECT m.issuer, m.subject, m.role, m.status FROM local_grants g JOIN local_members m ON m.issuer=g.issuer AND m.subject=g.subject WHERE g.digest=? AND g.revoked=0 AND g.expires>?", (_digest(token), self._now())).fetchone()
         if not row or row['status'] != 'active' or row['role'] not in ('owner', 'parent') or (owner and row['role'] != 'owner'):
@@ -113,7 +120,8 @@ class FamilyAuthorization:
             if prior and (prior['issuer'], prior['subject']) != (issuer, subject): raise PermissionError('denied')
             existing = c.execute('SELECT operation_id FROM hosted_operations WHERE operation_id=?', (operation_id,)).fetchone()
             if bool(prior) != bool(existing): raise RuntimeError('invalid operation ownership')
-            result = self.bank._mutate(c, operation_id, action, args)
+            with c._authorized_bank():
+                result = self.bank._mutate(c, operation_id, action, args)
             if not prior:
                 c.execute('INSERT INTO local_operations VALUES (?, ?, ?)', (operation_id, issuer, subject))
             return result

@@ -49,6 +49,19 @@ class AuthorizationTest(unittest.TestCase):
         self.now += 2
         with self.assertRaises(PermissionError): a.read(F, p3, 'kids', [])
 
+    def test_swallowed_auth_failure_poison_rolls_back(self):
+        self.a.mutate(F, self.owner, 'kid', 'add_kid', ['Synthetic'])
+        before = snapshot(self.storage)
+        def operation(c):
+            c.execute('UPDATE kids SET wallet_cents=999 WHERE id=1')
+            try:
+                self.a._auth(c, F, 'invalid')
+            except PermissionError:
+                pass
+        with self.assertRaisesRegex(RuntimeError, 'poisoned'):
+            self.a.bank._transaction(operation)
+        self.assertEqual(snapshot(self.storage), before)
+
     def test_idempotency_actor_and_rollback(self):
         a = self.a
         a.mutate(F, self.owner, 'kid', 'add_kid', ['Synthetic'])

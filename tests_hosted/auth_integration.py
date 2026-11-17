@@ -111,6 +111,20 @@ def main():
                     assert req('mutate', failed)['result'] == [False, 'No coins to spend']
                     assert req('snapshot', [])['result'] == funded
                     assert req('mutate', [F, token, 'fresh-spend', 'spend', [1, 1]])['result'] == [True, 'Spent!']
+                # Accrued interest capitalized by a withdrawal is its own
+                # ledger row and the retry must not record it twice.
+                obj = 'interest-once'
+                call('bootstrap_privileged', [F, O], object_name=obj)
+                tok = call('issue_grant_privileged', [F, O, 100], object_name=obj)['result']
+                call('mutate', [F, tok, 'kid', 'add_kid', ['Interest']], object_name=obj)
+                call('mutate', [F, tok, 'save', 'save', [1, 500]], object_name=obj)
+                call('seed_interest', [], object_name=obj)
+                request = [F, tok, 'withdraw', 'withdraw', [1, 1]]
+                assert call('mutate', request, object_name=obj)['result'] == [True, 'Done!']
+                after = call('snapshot', [], object_name=obj)['result']
+                assert [(r['kind'], r['amount_cents']) for r in after['transactions']] == [('save', 500), ('interest', 20), ('withdraw', 1)]
+                assert call('mutate', request, object_name=obj)['result'] == [True, 'Done!']
+                assert call('snapshot', [], object_name=obj)['result'] == after
                 call('bootstrap_privileged',[F,O])
                 family2 = 'b'*32
                 call('bootstrap_privileged',[family2,O],object_name='two')

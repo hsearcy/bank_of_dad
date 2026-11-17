@@ -3,11 +3,16 @@ import json
 from urllib.parse import urlparse, parse_qs
 from workers import WorkerEntrypoint, Response
 from hosted.object import FamilyBank
+from hosted.service import FamilyService
 import bank
 
 bank.time.time = lambda: 1700000000.0
 
 class SyntheticBank(FamilyBank):
+    def __init__(self, ctx, env):
+        super().__init__(ctx, env)
+        self.service = FamilyService(ctx.storage)
+
     async def fetch(self, request):
         try:
             q = parse_qs(urlparse(request.url).query)
@@ -49,7 +54,8 @@ class SyntheticBank(FamilyBank):
                 result = self.service._transaction(snapshot_all)
             elif action == 'fail_collect':
                 def fail_collect(c):
-                    bank.collect_rewards(c, 1)
+                    with c._authorized_bank():
+                        bank.collect_rewards(c, 1)
                     raise RuntimeError('after collection commit')
                 result = self.service._transaction(fail_collect)
             elif action == 'fixture_balance':
@@ -72,7 +78,8 @@ class SyntheticBank(FamilyBank):
                 result = self.service._transaction(snapshot)
             elif action == 'fail_after_commit':
                 def fail(conn):
-                    bank.gift(conn, 1, 900, 'rollback')
+                    with conn._authorized_bank():
+                        bank.gift(conn, 1, 900, 'rollback')
                     raise RuntimeError('after inner commit')
                 result = self.service._transaction(fail)
             else:

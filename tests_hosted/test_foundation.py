@@ -61,7 +61,8 @@ class FoundationTest(unittest.TestCase):
         before = json.dumps(state, sort_keys=True)
         def broken(conn):
             import bank
-            bank.gift(conn, 1, 100, 'rollback')
+            with conn._authorized_bank():
+                bank.gift(conn, 1, 100, 'rollback')
             raise RuntimeError('after inner commit')
         with self.assertRaisesRegex(RuntimeError, 'after inner commit'):
             self.svc._transaction(broken)

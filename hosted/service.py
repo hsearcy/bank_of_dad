@@ -54,14 +54,20 @@ class FamilyService:
 
     def _transaction(self, operation):
         if self.conn._active:
+            self.conn._poisoned = True
             raise RuntimeError('nested transaction forbidden')
         def run():
             if self.conn._active:
                 raise RuntimeError('nested transaction forbidden')
             self.conn._active = True
+            self.conn._poisoned = False
             try:
-                return operation(self.conn)
+                result = operation(self.conn)
+                if self.conn._poisoned:
+                    raise RuntimeError('transaction poisoned')
+                return result
             finally:
+                self.conn._capability = None
                 self.conn._active = False
         proxy = self.proxy_factory(run)
         try:
@@ -210,7 +216,11 @@ class FamilyService:
         return json.loads(encoded)
 
     def mutate(self, operation_id, action, args):
-        return self._transaction(lambda conn: self._mutate(conn, operation_id, action, args))
+        """Synthetic test helper only; never expose this service as an RPC."""
+        def op(conn):
+            with conn._authorized_bank():
+                return self._mutate(conn, operation_id, action, args)
+        return self._transaction(op)
 
     def _read(self, conn, action, args):
         self._validate(_READS, action, args)

@@ -3,12 +3,13 @@
 This is internal storage code, not a hosted product. For the separate internal
 identity and membership directory foundation, its trust contract and unresolved
 integration gaps, see [IDENTITY.md](IDENTITY.md). The separate experimental
-co-located authorization slice and its critical bypass and integration limits are
-in [FAMILY_AUTH.md](FAMILY_AUTH.md); it does not protect `FamilyBank`.
+co-located authorization slice and its integration limits are
+in [FAMILY_AUTH.md](FAMILY_AUTH.md).
 `hosted.object.FamilyBank`
 has no HTTP handler. Each instance must be bound to exactly one family's DO
-storage. A future trusted caller must authenticate the principal, authorize the
-requested family and operation, and resolve the family DO server-side. DO IDs,
+storage. Its read and mutation RPCs require a currently valid family-local grant.
+A future trusted caller must authenticate the principal, provision that grant,
+and resolve the family DO server-side. DO IDs,
 client-supplied family names, the self-host PIN, and knowledge of an operation
 ID are **not authorization**. Do not wire this to a public Worker yet.
 
@@ -22,10 +23,9 @@ existing family data is offered, including marker-only version 0 databases.
 The version marker, original schema/migrations and operation table are created
 atomically. Future schema versions need explicit, transactional upgrade code.
 
-**Legacy accounting caveat:** saving or withdrawing capitalizes accrued savings
-interest without a separate interest ledger transaction. This inherited bank
-behavior is intentionally unchanged; ledger entries alone do not explain every
-balance change. Do not present the ledger as a complete accounting audit trail.
+**Legacy accounting caveat:** saving or withdrawing now records newly capitalized
+interest separately. Older activity can still contain unexplained balance changes;
+do not present historical ledger entries as a complete accounting audit trail.
 Collection records interest when positive and a history snapshot when rewards or a
 matured bond are collected; a zero-gain bond payout still creates a snapshot.
 History uses the inherited owned-value rules.
@@ -105,9 +105,9 @@ Cloudflare runtime. Tests access no existing family DB.
 Authentication, authorization, the family-to-object mapping, RPC serialization,
 request validation at the trust boundary, end-to-end secure session/revocation, app/API
 integration, backup/recovery, limits and abuse controls, billing, and production
-Cloudflare behavior remain unimplemented or unverified. The current local test
-uses synthetic HTTP to call the service *within* a subclass, not actual
-cross-Worker DO RPC. Only tested bank operations are available. The conservative guards are not a
+Cloudflare behavior remain unimplemented or unverified. A separate local synthetic
+cross-DO RPC test covers basic serialization and exposed methods, not deployed
+behavior. Only tested bank operations are available. The conservative guards are not a
 substitute for production quota, abuse, corruption, or accounting review.
 Idempotency records remain unbounded. Local concurrent
 requests do not prove multi-region failures or crash durability. No real-data

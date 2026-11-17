@@ -1,10 +1,10 @@
 # Experimental family-local authorization — NOT deployable
 
-`FamilyAuthorization` is an internal-only, synthetic foundation, not a Worker,
-RPC interface or an integration with `Directory` or `FamilyBank`. It provides no
-identity verification or family routing. **Do not expose it to clients.** The
-existing `FamilyService` and `FamilyBank` remain unauthenticated and bypass this
-module entirely; they must not be exposed as an alternative path.
+`FamilyAuthorization` is an internal-only foundation, not an integration with
+`Directory`. It provides no identity verification or family routing. **Do not
+expose it to clients.** `FamilyBank` exposes only grant-checked reads and mutations;
+the direct `FamilyService` methods are synthetic test helpers and must not be
+exposed as an alternative path.
 
 A future trusted boundary must verify identity and select the correct family DO
 server-side. `bootstrap_privileged` and `issue_grant_privileged` are privileged
@@ -27,8 +27,10 @@ relationship to directory sessions is implemented.
 
 Every local check, bank operation, idempotency lookup/result and membership change
 or revocation uses the same synchronous SQLite transaction, with no await inside
-it. The existing bank transaction guard remains in force, and its domain functions
-are unchanged. Operation IDs are family-scoped, bound to the original issuer and
+it. The SQLite guard remains in force; the exact hosted adapter additionally
+requires an ephemeral connection-bound capability installed after authorization.
+Guard and SQL errors poison the transaction even if caught inside the callback.
+Operation IDs are family-scoped, bound to the original issuer and
 subject and canonical payload. Current authorization is checked before any replay;
 a different principal cannot see a result or reuse its ID. A same-principal new
 grant can retry while still authorized. An exception after the bank write rolls
@@ -41,7 +43,7 @@ checks and does not validate its entire SQLite catalog against malicious changes
 this is not a defense against a compromised trusted caller or arbitrary SQLite
 access. Idempotency and membership records are not bounded or pruned. Operational
 limits, anti-abuse, ownership recovery, audit, backup, secure token handling,
-OIDC, gateway, actual RPC serialization, global revocation, coordinated bootstrap,
+OIDC, gateway, global revocation, coordinated bootstrap,
 real-data migration, security review and production deployment remain undone.
 
 Synthetic tests: `python -m unittest discover -s tests_hosted -p 'test_*.py'` and
@@ -55,6 +57,6 @@ the returned result and a full bank/idempotency snapshot after each replay. Both
 also test an empty-wallet spend: its failure result is recorded and replayed
 without bank changes. A missing child raises `ValueError('invalid request')` on
 both attempts and writes no operation record. These are synthetic local tests,
-not evidence of production Cloudflare, RPC, gateway, identity verification or
+not evidence of production Cloudflare, gateway, identity verification or
 real-data behavior. Interest and investment collection are covered by separate
 bank foundation tests, not this role matrix.
