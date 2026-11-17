@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "jose": "6.2.15",
+    "openid-client": "6.9.0"
+  }
+}
