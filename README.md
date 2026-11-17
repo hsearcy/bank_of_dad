@@ -52,19 +52,27 @@ This is an in-memory broadcaster for the existing **single-process**, threaded
 self-hosted app (`./run.sh`); it is not a durable event log or a multi-worker
 pub/sub service. Each socket consumes server threads. A reverse proxy must pass
 WebSocket Upgrade/Connection headers for `/api/updates`, preserve the original
-Host and same-origin scheme, and allow idle connections (the server pings every
-25 seconds). A TLS-terminating proxy must configure trusted scheme forwarding
-in its WSGI setup; do not blindly trust arbitrary forwarded headers. If upgrading
+Host, and allow idle connections (the server pings every 25 seconds). In hosted
+mode, the expected browser Origin is the configured HTTPS `BOD_PUBLIC_ORIGIN`,
+so TLS termination to an HTTP WSGI backend does not require trusting forwarded
+headers. Self-hosted mode compares Origin with the request's own host/scheme;
+if serving local mode behind TLS, configure trusted scheme forwarding in the
+WSGI setup. Never blindly trust arbitrary forwarded headers. If upgrading
 is unavailable, HTTP reads/writes and the polling fallback still work. Multiple
 worker processes need a shared broadcaster for immediate cross-worker delivery;
 without it, reconciliation still runs every 30 seconds. No deployment or proxy
 configuration is performed by this change.
 
-Only same-origin browser handshakes are accepted (missing, null and foreign
-Origins are rejected). This avoids adding a cross-origin subscription; it does
-**not** authenticate a family or user. The socket shares the dashboard's existing
-local, unauthenticated read boundary and leaks local activity timing to connected
-clients. Do not expose it as a public multi-tenant service.
+Only exact same-origin browser handshakes are accepted (missing, null and foreign
+Origins are rejected). In **self-hosted mode**, this is not authentication: the
+socket shares the dashboard's local, unauthenticated read boundary and reveals
+local activity timing to connected clients. Do not expose local mode publicly.
+In **hosted mode**, sockets additionally require a signed-in, entitled parent,
+subscribe only to that server-selected family, and recheck the persisted session
+and entitlement before each notification and on idle timeouts. Logout/session
+expiry or lost entitlement closes an open socket; HTTP reconciliation on socket
+loss moves the dashboard back to login/billing. No family identifiers or balances
+are carried in notifications. See [HOSTED.md](HOSTED.md) for operational limits.
 
 ## Optional hosted families and subscriptions
 

@@ -185,17 +185,20 @@ class BroadcasterTests(unittest.TestCase):
         from realtime import Updates
         updates = Updates()
         pending = Queue(maxsize=1)
-        updates._subscribers.add(pending)
+        updates._subscribers[pending] = None
         for _ in range(1000):
             updates.publish()
         self.assertEqual(1, pending.qsize())
-        updates._subscribers.remove(pending)
+        updates._subscribers.pop(pending)
 
         class ClosedSocket:
             def send(self, message):
                 raise ConnectionClosed()
+
+            def close(self):
+                pass
         updates.serve(ClosedSocket())
-        self.assertEqual(set(), updates._subscribers)
+        self.assertEqual({}, updates._subscribers)
 
 
 if __name__ == "__main__":

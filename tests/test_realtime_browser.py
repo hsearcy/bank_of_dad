@@ -21,7 +21,8 @@ class RealtimeBrowserTests(test_realtime.AppServerCase):
 
     def page(self, *, disable_poll=True, disable_socket=False):
         # Separate browser processes, not two tabs sharing a JS context.
-        browser = self.playwright.chromium.launch()
+        browser = self.playwright.chromium.launch(
+            executable_path=os.environ.get("BOD_TEST_CHROMIUM"))
         self.addCleanup(browser.close)
         page = browser.new_page()
         page.on("pageerror", lambda error: self.errors.append(str(error)))

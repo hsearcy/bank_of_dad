@@ -1,7 +1,8 @@
 # Hosted mode: one parent identity, one family, Stripe billing
 
 This is an opt-in path in the existing Flask app, not a separate demo. The default
-`BANK_OF_DAD_MODE=self-hosted` remains free, local, and Flask-only. Do not point
+`BANK_OF_DAD_MODE=self-hosted` remains free, local, and needs only the base
+Flask/Flask-Sock dependencies. Do not point
 hosted mode at an existing local bank database. It creates separate files under
 `BOD_HOSTED_DATA`; `BANK_OF_DAD_DB` is not used in hosted requests.
 
@@ -51,8 +52,13 @@ review its current pricing/terms before choosing it.
    ```
 
 5. Serve the app with a production WSGI server, for example
-   `gunicorn --workers 1 --threads 4 --bind 127.0.0.1:5001 app:app`, behind HTTPS.
+   `gunicorn --workers 1 --threads 32 --bind 127.0.0.1:5001 app:app`, behind HTTPS.
+   Each open WebSocket consumes a request thread; leave capacity for HTTP/billing.
    Preserve the configured public Host header; do not expose the WSGI listener.
+   Forward WebSocket Upgrade/Connection for `/api/updates` and allow idle pings.
+   Hosted WebSocket Origin validation uses `BOD_PUBLIC_ORIGIN`, including when
+   the trusted proxy terminates HTTPS and talks HTTP to WSGI. No arbitrary
+   forwarded scheme/origin headers are trusted.
    Trust neither arbitrary forwarded headers nor a browser-supplied callback URL.
    Apply ingress rate limits (particularly login/billing) at the reverse proxy.
    Run as an unprivileged service user, with `umask 077` and a private persistent
@@ -94,13 +100,31 @@ procedure. Keep credentials/mode consistent and plan any account migration.
   server. The Price and quantity are server configured. Repeated open Checkout
   requests reuse the same session; Stripe idempotency keys mitigate uncertain
   creation responses but are not an exactly-once purchase guarantee across long
-  outages, expired keys or time-window boundaries. Portal sessions are short-lived.
+  outages, expired keys or time-window boundaries. Before any new Checkout, all
+  current customer subscriptions are checked independently of the old Checkout's
+  expiry. Any nonterminal subscription (including past_due/unpaid/incomplete)
+  routes to the billing portal for recovery instead of a second subscription;
+  only canceled/incomplete_expired subscriptions allow subscribing anew. An
+  already-entitled family returns to billing. Portal sessions are short-lived.
 - Only an `active` subscription with the configured Price and quantity one grants
   access, until the item period end (capped by an earlier cancellation time).
   Cancel-at-period-end retains already-paid access; canceled, past_due, unpaid,
   incomplete and trialing do not grant access. There is no trial or grace period.
   Expiry is checked on each request. An expired subscription blocks bank access,
   but does not delete family data or block billing/refresh/sign-out.
+- `/api/updates` is also session/entitlement protected, with exact configured
+  public Origin and Host validation before upgrade. Its channel is selected from
+  the authenticated family's server-owned ID, never a request parameter. Only
+  successful committed bank routes enqueue that family's content-free signal.
+  Before initial delivery and each later signal, and every 0.5 seconds while
+  idle, the socket rereads the stored session and entitlement; revoked/expired
+  access closes it without refreshing the session lifetime. Notification timing
+  is visible to other authorized devices in the same family, not other families.
+  Authorization checks and socket sends are not an atomic revocation barrier.
+  This remains an in-memory single-process broadcaster with bounded queues,
+  not durable delivery or multi-worker pub/sub; 30-second HTTP reconciliation
+  and reconnect/resume snapshots recover missed signals. More workers require
+  a shared broadcaster for immediate cross-worker updates.
 - The official Stripe SDK verifies raw webhook bytes and timestamp tolerance;
   future timestamps, wrong mode and connected-account events are rejected.
   Only mapped customer IDs can affect families. Event payloads/metadata and success
@@ -135,21 +159,34 @@ analytics, marketing identifiers or emails are added. This is data minimization,
 ## Verification
 
 ```sh
-# Free mode: base dependencies only, no hosted credentials required.
+# Free mode: base runtime + test dependencies only, no hosted credentials required.
+python -m pip install -r requirements-test.txt
 python -m unittest discover -s tests -v
 # Hosted tests: install optional test tools in a disposable environment.
-python -m pip install -r requirements-hosted.txt pytest
-python -m pytest tests_hosted/test_hosted.py -q
-# Optional actual Chromium UI test (defaults to /usr/bin/chromium).
+python -m pip install -r requirements-hosted.txt -r requirements-test.txt pytest
+python -m pytest tests_hosted/test_hosted.py tests_hosted/test_duplicate_subscription.py tests_hosted/test_hosted_realtime.py -q
+# Actual Chromium UI and hosted WSS isolation/reconnect tests (system Chromium).
 python -m pip install playwright
-python -m pytest tests_hosted/test_browser.py -q
+BOD_TEST_CHROMIUM=/usr/bin/chromium python -m pytest tests_hosted -q
+# Free-mode real browser tests (no hosted dependencies required).
+BANK_OF_DAD_BROWSER_TESTS=1 BOD_TEST_CHROMIUM=/usr/bin/chromium python -m unittest discover -s tests -v
 ```
 
 Hosted tests use synthetic identities and balances, real Authlib/JWKS/PKCE HTTP
 requests to a disposable local issuer, the real Stripe SDK against a local HTTP
-fixture, and SDK-signed webhook inputs. They do not configure or contact a real
-Stripe or identity-provider account. Do not mistake those fixtures for provider
-acceptance, a production security review, or a verified deployment.
+fixture, and SDK-signed webhook inputs. The real network tests connect two devices
+in family A and an independent family B, assert post-commit A-only notifications,
+reconnect resync, anonymous/unpaid/origin denial, and open-socket logout/session/
+entitlement expiry. The HTTP-backend test uses the configured HTTPS public Origin
+and preserved Host, modeling TLS termination without trusting forwarded headers.
+Chromium also exercises the actual hosted UI with polling disabled, family-isolated
+push, reconnect, anonymous socket denial and entitlement expiry. Free-mode browser
+tests separately exercise the PIN, animations, input preservation and polling
+fallback, and can run without any hosted runtime dependencies.
+
+These tests do not configure or contact a real Stripe or identity-provider account.
+Do not mistake those fixtures for provider acceptance, a production security review,
+or a verified deployment/proxy configuration.
 
 References: [Authlib Flask OIDC](https://docs.authlib.org/en/latest/oauth2/client/web/flask.html),
 [Auth0 web app setup](https://auth0.com/docs/quickstart/webapp/python),

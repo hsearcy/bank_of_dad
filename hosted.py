@@ -170,6 +170,17 @@ class Hosted:
                         return jsonify(error='Object not found'), 404
         return None
 
+    def socket_authorized(self, family):
+        # Flask's request session is a handshake snapshot. Re-read the server-side
+        # session so logout/expiry also revoke an already-open idle socket. Do not
+        # save/refresh it: a long-lived socket must not extend the session lifetime.
+        current = self.app.session_interface.open_session(self.app, request)
+        if not current or current.get('family') != family:
+            return False
+        with self.connect() as conn:
+            row = conn.execute('SELECT paid_until FROM families WHERE id=?', (family,)).fetchone()
+        return bool(row and row['paid_until'] > time.time())
+
     def headers(self, response):
         response.headers['Cache-Control'] = 'no-store'
         response.headers['Referrer-Policy'] = 'same-origin'

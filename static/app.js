@@ -129,6 +129,9 @@ function startLiveUpdates() {
       if (socket !== ws) return;
       clearTimeout(handshakeTimer);
       socket = null;
+      // Hosted sockets can lose authorization while idle. Recheck via HTTP on
+      // loss too: a browser/proxy may hide the policy close code.
+      if (document.querySelector('meta[name="csrf-token"]')) backgroundRefresh();
       retry();
     };
     ws.onerror = () => { if (socket === ws) ws.close(); };

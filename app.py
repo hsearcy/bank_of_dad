@@ -9,7 +9,7 @@ Host/port are configurable via env (so we don't assume any fixed port):
 
 import os
 
-from flask import Flask, abort, jsonify, render_template, request
+from flask import Flask, abort, g, jsonify, render_template, request
 from flask_sock import Sock
 
 from realtime import Updates
@@ -35,16 +35,24 @@ updates = Updates()
 
 @app.before_request
 def updates_origin():
-    # The dashboard itself is intentionally unauthenticated. Do not turn this
-    # new read channel into a cross-origin subscription (including null origins).
     if request.path == "/api/updates":
-        if request.headers.get("Origin") != request.host_url.rstrip("/"):
+        # Hosted TLS terminates at a proxy; use the configured public origin,
+        # not the backend scheme or untrusted X-Forwarded-* headers. The hosted
+        # guard separately requires the preserved public Host, session and payment.
+        host = app.extensions.get('bod_hosted')
+        expected = host.origin if host else request.host_url.rstrip("/")
+        if request.headers.get("Origin") != expected:
             abort(403)
 
 
 @sock.route("/api/updates")
 def api_updates(ws):
-    updates.serve(ws)
+    host = app.extensions.get('bod_hosted')
+    if host:
+        family = g.hosted_family['id']  # Only the authenticated server association.
+        updates.serve(ws, channel=family, authorized=lambda: host.socket_authorized(family))
+    else:
+        updates.serve(ws)
 
 
 # Domain functions commit before these routes return. Never broadcast reads,
@@ -62,7 +70,12 @@ def notify_mutation(response):
     if (request.method == "POST" and request.endpoint in MUTATION_ENDPOINTS
             and 200 <= response.status_code < 300 and response.is_json
             and response.get_json().get("ok") is True):
-        updates.publish()
+        # Hosted requests cannot fall back into the local broadcast channel.
+        if 'bod_hosted' in app.extensions:
+            if getattr(g, 'hosted_family', None) is not None:
+                updates.publish(channel=g.hosted_family['id'])
+        else:
+            updates.publish()
     return response
 
 
