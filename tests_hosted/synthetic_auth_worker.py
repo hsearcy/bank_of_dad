@@ -16,12 +16,20 @@ class SyntheticAuth(DurableObject):
             args = json.loads(q.get('args', ['[]'])[0])
             now = int(q.get('now', ['1000'])[0])
             auth = FamilyAuthorization(self.storage, clock=lambda: now)
-            if action == 'fault':
-                original = auth.bank._mutate
-                def fail(*a):
-                    original(*a)
-                    raise RuntimeError('after bank write')
-                auth.bank._mutate = fail
+            if action == 'snapshot':
+                tables = ('kids', 'bonds', 'transactions', 'history', 'settings',
+                          'hosted_schema', 'sqlite_sequence', 'hosted_operations', 'local_operations')
+                result = auth.bank._transaction(lambda c: {
+                    table: c.execute('SELECT * FROM ' + table + ' ORDER BY rowid').fetchall()
+                    for table in tables})
+            elif action == 'fault':
+                original = auth.bank.conn.execute
+                def fail(sql, params=()):
+                    result = original(sql, params)
+                    if sql.startswith('INSERT INTO local_operations'):
+                        raise RuntimeError('after bank write and both operation records')
+                    return result
+                auth.bank.conn.execute = fail
                 result = auth.mutate(*args)
             else:
                 result = getattr(auth, action)(*args)
