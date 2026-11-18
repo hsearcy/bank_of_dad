@@ -18,7 +18,6 @@
   <header class="topbar">
     <h1>🏦 Bank of Dad</h1>
     <button id="dadBtn" class="dad-btn" title="Dad controls">👨‍👧 Dad</button>
-    {% if session.get('family') %}<a href="/billing">Subscription / sign out</a>{% endif %}
   </header>
 
   <main id="kids" class="kids"></main>
@@ -27,6 +26,18 @@
   <div id="dadPanel" class="panel hidden">
     <div class="panel-card">
       <h2>👨‍👧 Dad Controls</h2>
+      {% if hosted_account is defined %}
+      <details class="dad-account" aria-label="Family subscription">
+        <summary>Subscription &amp; sign out
+          <span class="access-badge access-{{ hosted_account.kind }}">{% if hosted_account.kind == 'trial' %}Free trial · {{ hosted_account.days_left }}d left{% elif hosted_account.kind == 'paid' %}Subscribed{% else %}Free access{% endif %}</span>
+        </summary>
+        {% with in_dad_modal=true %}{% include 'hosted_account.html' %}{% endwith %}
+        <form action="/auth/logout" method="post" class="account-signout">
+          <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
+          <button class="account-text-button">Sign out of Bank of Dad</button>
+        </form>
+      </details>
+      {% endif %}
       <div id="dadKids" class="dad-kids"></div>
       <hr>
       <h3>Add a kid</h3>
@@ -45,9 +56,9 @@
         <button class="ff" data-days="30">⏩ +1 month</button>
         <button class="ff" data-days="90">⏩ +3 months</button>
       </div>
-      <hr>
-      <h3>Security</h3>
-      <div class="row">
+      <hr {% if session.get('family') %}hidden{% endif %}>
+      <h3 {% if session.get('family') %}hidden{% endif %}>Security</h3>
+      <div class="row" {% if session.get('family') %}hidden{% endif %}>
         <button id="changePinBtn" class="go" style="background:#8b5cf6" {% if session.get('family') %}hidden{% endif %}>🔒 Set / Change Dad PIN</button>
       </div>
       <button id="closeDad" class="close">Close</button>

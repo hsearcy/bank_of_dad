@@ -15,6 +15,12 @@ class OnboardingTests(unittest.TestCase):
 import app
 client = app.app.test_client()
 assert client.get('/').status_code == 200
+page = client.get('/').get_data(as_text=True)
+assert 'Subscription &amp; sign out' not in page
+assert 'Subscribe with Stripe' not in page
+assert 'Free trial' not in page
+assert 'Set / Change Dad PIN' in page
+assert 'bod_hosted' not in app.app.extensions
 assert client.get('/api/state').get_json()['kids'] == []
 assert client.get('/api/admin/status').get_json()['pin_set'] is False
 assert client.post('/api/admin/pin', json={'new_pin': '1234'}).get_json()['ok']

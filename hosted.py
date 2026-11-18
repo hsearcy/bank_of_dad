@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlsplit
 from flask import abort, g, jsonify, redirect, render_template, request, session
 
 import db
+from hosted_access import TRIAL_SECONDS, access_status, migrate, support_destination
 
 
 def digest(value):
@@ -32,6 +33,7 @@ class Hosted:
         import stripe
 
         self.app = app
+        self.support_url = support_destination()
         self.stripe_module = stripe
         self.origin = os.environ['BOD_PUBLIC_ORIGIN'].rstrip('/')
         self.issuer = os.environ.get('BOD_OIDC_ISSUER', 'https://accounts.google.com')
@@ -97,8 +99,10 @@ class Hosted:
                     id TEXT PRIMARY KEY, digest TEXT NOT NULL, received REAL NOT NULL
                 );
             ''')
+            migrate(conn)
         app.before_request(self.guard)
         app.after_request(self.headers)
+        app.context_processor(self.account_context)
         app.add_url_rule('/auth/login', 'hosted_login', self.login)
         app.add_url_rule('/auth/callback', 'hosted_callback', self.callback)
         app.add_url_rule('/auth/logout', 'hosted_logout', self.logout, methods=['POST'])
@@ -148,7 +152,7 @@ class Hosted:
             if request.headers.get('Origin') not in (None, self.origin):
                 abort(403)
         if request.path.startswith('/api/') or request.endpoint == 'index':
-            if row['paid_until'] <= time.time():
+            if not access_status(row)['active']:
                 if request.path.startswith('/api/'):
                     return jsonify(error='Subscription required', billing='/billing'), 402
                 return redirect('/billing')
@@ -186,8 +190,8 @@ class Hosted:
         if not current or current.get('family') != family:
             return False
         with self.connect() as conn:
-            row = conn.execute('SELECT paid_until FROM families WHERE id=?', (family,)).fetchone()
-        return bool(row and row['paid_until'] > time.time())
+            row = conn.execute('SELECT * FROM families WHERE id=?', (family,)).fetchone()
+        return bool(row and access_status(row)['active'])
 
     def headers(self, response):
         response.headers['Cache-Control'] = 'no-store'
@@ -235,8 +239,10 @@ class Hosted:
             session.clear()
             return 'Sign-in failed. Please try again.', 400
         with self.connect() as conn:
-            conn.execute('INSERT OR IGNORE INTO families(id, issuer, subject) VALUES (?, ?, ?)',
-                         (secrets.token_hex(16), self.issuer, claims['sub']))
+            # Only the first creation starts a trial. Login, billing reconciliation
+            # and client inputs can never reset these server-owned timestamps.
+            conn.execute('INSERT OR IGNORE INTO families(id, issuer, subject, trial_started, trial_until) VALUES (?, ?, ?, ?, ?)',
+                         (secrets.token_hex(16), self.issuer, claims['sub'], now, now + TRIAL_SECONDS))
             family = conn.execute('SELECT id FROM families WHERE issuer=? AND subject=?',
                                   (self.issuer, claims['sub'])).fetchone()['id']
         db.init_db(path=self.family_path(family))
@@ -256,8 +262,14 @@ class Hosted:
         return '<p>You are signed out of Bank of Dad.</p><a href="/auth/login">Sign in</a>'
 
     def billing(self):
-        return render_template('billing.html', family=g.hosted_family,
-                               active=g.hosted_family['paid_until'] > time.time())
+        return render_template('billing.html')
+
+    def account_context(self):
+        family = getattr(g, 'hosted_family', None)
+        if family is None:
+            return {}
+        return {'hosted_account': access_status(family), 'hosted_family': family,
+                'support_url': self.support_url}
 
     def customer(self, conn):
         family = conn.execute('SELECT * FROM families WHERE id=?', (g.hosted_family['id'],)).fetchone()

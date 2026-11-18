@@ -45,7 +45,8 @@ verified stable issuer/subject identity. It never links accounts by email.
 2. In a **Stripe sandbox/test account first**, create a product with one active,
    recurring USD **999 cents / year**, quantity one, Price. Configure the Stripe
    customer portal to allow payment-method updates and cancellation at period end,
-   without plan/quantity switching. No trial, discounts or tax-address collection
+   without plan/quantity switching. The app's no-card week is local access, not
+   a Stripe trial. No Stripe trial, discounts or tax-address collection
    are requested by this implementation. Any legally required tax/privacy/terms
    configuration remains the operator's responsibility; do not assume it away.
 3. Register a platform-account snapshot webhook at
@@ -71,6 +72,7 @@ verified stable issuer/subject identity. It never links accounts by email.
    BOD_STRIPE_PRICE_ID=<sandbox annual price ID>
    BOD_STRIPE_WEBHOOK_SECRET=<endpoint signing secret>
    BOD_STRIPE_LIVEMODE=false
+   BOD_SUPPORT_URL=<optional HTTPS contact page or mailto:your-support-address>
    ```
 
 5. Serve the app with a production WSGI server, for example
@@ -86,11 +88,28 @@ verified stable issuer/subject identity. It never links accounts by email.
    Run as an unprivileged service user, with `umask 077` and a private persistent
    directory. Back up all hosted SQLite files together using SQLite-aware backups
    or while stopped; use local disk, not network-shared SQLite storage.
-6. Visit `/`, sign in, subscribe in Stripe Checkout, then return to `/billing`.
-   Webhook reconciliation activates access. If delivery is delayed, the explicit
-   **Refresh subscription status** button reads Stripe directly. Then open the
-   family bank, open Dad controls, and add children using nicknames if desired.
-   Manage payment methods and cancel in the Stripe-hosted portal.
+6. Visit `/` and sign in. A new family can use the bank immediately for **7 days**
+   without a payment method; add children using nicknames in Dad controls.
+   **Dad → Subscription & sign out** shows trial status, Subscribe, payment
+   management and sign-out, without a separate toolbar billing link. The section
+   stays collapsed until opened so it does not get in the way of Dad controls.
+   At expiry, the bank opens a styled access page; data is retained. The parent
+   can subscribe, contact support, refresh billing or sign out even after expiry.
+   Choosing Subscribe opens Stripe Checkout for the paid **$9.99 USD/year** plan;
+   it charges only after explicit confirmation, not automatically at trial end.
+   Webhook reconciliation activates paid access. If delivery is delayed, the
+   **Refresh subscription status** button reads Stripe directly. Manage payment
+   methods and cancel in Stripe's portal.
+
+Set `BOD_SUPPORT_URL` to the operator's actual HTTPS contact page or a plain
+`mailto:` address, then restart through your normal deployment process. Do not
+use the example placeholder as a destination. This link is visible in Dad controls
+and the expired-access page, beside a selectable **Family ID**. Invalid schemes,
+credentials and whitespace are rejected at startup. If omitted, no fake/dead link
+is rendered: users are told to ask the person running this instance, and that a
+contact link has not been configured. **Configure it before public onboarding**
+so parents who cannot pay have a direct way to reach you. No support inbox,
+outbound email service or owner's email is assumed.
 
 Google's issuer defaults to `https://accounts.google.com`; no issuer variable is
 needed. The existing `BOD_OIDC_*` names are intentionally retained, not an Auth0
@@ -149,11 +168,30 @@ procedure. Keep credentials/mode consistent and plan any account migration.
   only canceled/incomplete_expired subscriptions allow subscribing anew. An
   already-entitled family returns to billing. Portal sessions are short-lived.
 - Only an `active` subscription with the configured Price and quantity one grants
-  access, until the item period end (capped by an earlier cancellation time).
+  **paid** access, until the item period end (capped by an earlier cancellation time).
   Cancel-at-period-end retains already-paid access; canceled, past_due, unpaid,
-  incomplete and trialing do not grant access. There is no trial or grace period.
-  Expiry is checked on each request. An expired subscription blocks bank access,
-  but does not delete family data or block billing/refresh/sign-out.
+  incomplete and Stripe `trialing` do not grant paid access. Independently, a
+  family has access during its app trial or while an operator free-access grant
+  is active. Each new family gets exactly 604800 seconds from first creation,
+  persisted in server-owned `trial_started`/`trial_until`. Sign-in, refresh,
+  checkout and webhooks never reset the trial or free grant. No Stripe customer
+  or Checkout is created during signup. No payment information is required.
+  The ordinary parent session also lasts seven days; if it expires, signing back
+  in restores that same family's original trial/subscription, never a new trial.
+  The real server UTC clock controls expiry (keep it synchronized).
+- **Safe upgrade:** on first startup of this version, existing pre-trial families
+  receive a one-time seven-day migration-time grace week because the old schema
+  has no creation date. Schema changes and backfill are one SQLite transaction,
+  under a writer lock; restarting does not reset dates. Existing `paid_until`,
+  customer/Checkout mappings, identities and every family bank file are preserved.
+  A valid paid subscription takes precedence in the UI and remains valid.
+  Back up the hosted directory before an authorized production upgrade, as usual.
+  This is a forward migration, not permission to reset or copy a live database.
+- Expiry is checked server-side for every bank request and idle/open WebSockets.
+  After expiry without paid/free access, bank reads and writes return 402 (the
+  dashboard redirects to `/billing`). Family data is **never deleted**, and billing,
+  status refresh and sign-out remain available. Free self-hosting has no trial,
+  directory migration, payment gate or hosted configuration requirement.
 - `/api/updates` is also session/entitlement protected, with exact configured
   public Origin and Host validation before upgrade. Its channel is selected from
   the authenticated family's server-owned ID, never a request parameter. Only
@@ -177,10 +215,51 @@ procedure. Keep credentials/mode consistent and plan any account migration.
   Locking is deliberately simple and globally serializes billing calls: suitable
   for a small single-host deployment, not a high-throughput multi-region service.
 
+## Operator-only free access
+
+There is **no HTTP/admin grant endpoint** and no client-supplied entitlement.
+Run `hosted_access.py` as the trusted service user/operator who owns the private
+hosted directory. Filesystem access to that directory is the authorization
+boundary: keep it private (`umask 077`, owner-only directory), do not expose this
+CLI through a web shell, and do not give support requesters shell/DB access. The
+CLI is standard-library-only; it needs no Stripe/OIDC credentials or app import.
+It requires an explicit directory, opens only an existing `directory.sqlite`,
+does not migrate it and refuses unknown or malformed family IDs.
+
+Exact flow (replace directory and `FAMILY_ID` with verified actual values):
+
+```sh
+# 1. Ask the parent for the Family ID shown under Subscription & sign out or
+#    on /billing; verify their request through your trusted support channel.
+python hosted_access.py --data /absolute/private/hosted list
+python hosted_access.py --data /absolute/private/hosted show FAMILY_ID
+# 2. Check the exact ID and stored verified issuer/subject against the intended
+#    family. Email/name is not an identity key. If uncertain, do not grant.
+python hosted_access.py --data /absolute/private/hosted grant FAMILY_ID --reason 'Support request: no-cost access approved'
+# 3. Read back the exact family: free_access must be 1. Parent reloads /billing
+#    and opens their existing bank; no new signup or restart is needed.
+python hosted_access.py --data /absolute/private/hosted show FAMILY_ID
+# 4. To revoke only the override, retaining paid access and any unexpired trial:
+python hosted_access.py --data /absolute/private/hosted revoke FAMILY_ID --reason 'Free access arrangement ended'
+python hosted_access.py --data /absolute/private/hosted show FAMILY_ID
+```
+
+Grants are durable and indefinite until revoked. Each grant/revoke and required
+reason is recorded atomically with the flag in `access_audit`, with family ID,
+operator OS UID and server timestamp. Keep audit reasons short and nonsensitive.
+The CLI outputs the stored row only after commit. Repeated grant/revoke operations
+are safe (each adds an audit entry). Revocation takes effect on the next bank
+request and the next socket recheck (normally within 0.5 seconds idle); it does
+not delete bank data, erase trial dates or cancel a paid subscription. Conversely,
+**granting free access does not cancel/stop Stripe renewal**: an already-paying
+parent must manage/cancel that subscription in Stripe separately. Webhook
+reconciliation cannot revoke a free grant. Account management remains accessible.
+
 ## Actual retained data / boundaries
 
 The operator stores provider issuer/subject IDs, a random family ID, Stripe customer
-and Checkout identifiers/URL/expiry, entitlement expiry, event IDs/payload
+and Checkout identifiers/URL/expiry, entitlement expiry, trial dates, free-access
+flag and operator audit notes/UID/timestamps, event IDs/payload
 fingerprints, browser sessions and short-lived
 login state, plus the actual family bank data: children’s display names/emojis,
 balances, allowances/rates, investments, spending/gift notes and history. Stripe
@@ -210,7 +289,7 @@ python -m pip install -r requirements-test.txt
 python -m unittest discover -s tests -v
 # Hosted tests: install optional test tools in a disposable environment.
 python -m pip install -r requirements-hosted.txt -r requirements-test.txt pytest
-python -m pytest tests_hosted/test_hosted.py tests_hosted/test_duplicate_subscription.py tests_hosted/test_hosted_realtime.py -q
+python -m pytest tests_hosted/test_hosted.py tests_hosted/test_trial_access.py tests_hosted/test_duplicate_subscription.py tests_hosted/test_hosted_realtime.py -q
 # Actual Chromium UI and hosted WSS isolation/reconnect tests (system Chromium).
 python -m pip install playwright
 BOD_TEST_CHROMIUM=/usr/bin/chromium python -m pytest tests_hosted -q
@@ -233,6 +312,13 @@ tests separately exercise the PIN, animations, input preservation and polling
 fallback, and can run without any hosted runtime dependencies.
 
 These tests do not configure or contact a real Stripe or identity-provider account.
+Trial tests exercise actual signup without Checkout, fixed expiry across sign-in,
+boundary denial, cross-family HTTP and real sockets, local CLI grant/revoke and
+durable auditing, webhook independence, and preservation of paid access. Chromium
+exercises onboarding, Dad account controls, idle expiry, retained-bank restoration
+and sign-out at 390/768/1280px. Set `BOD_TEST_ARTIFACTS` to a disposable directory
+to retain screenshots of those real rendered pages. Support URLs in tests are
+labeled examples only; they are not an actual owner's support destination.
 Do not mistake those fixtures for provider acceptance, a production security review,
 or a verified deployment/proxy configuration.
 
