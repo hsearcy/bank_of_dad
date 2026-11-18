@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import threading
+import time
 
 import pytest
 from werkzeug.serving import make_server
@@ -143,6 +144,87 @@ def test_dashboard_edit_reload_signup_all_data_sync_and_collision(browser_bank, 
 
 
 @pytest.mark.parametrize('width', [390, 1280])
+def test_signup_delayed_auth_start_keeps_guest_socket_refresh_and_exact_bank(browser_bank, monkeypatch, width):
+    browser, host, state, origin, api = browser_bank
+    ctx = context(browser, width)
+    page = ctx.new_page()
+    page.goto(origin + '/')
+    page.locator('#tryGuestBank').click()
+    page.locator('#dadBtn').click()
+    page.locator('#newKidName').fill('Keep my edited bank')
+    page.locator('#addKidBtn').click()
+    api.expect(page.locator('.dk-head').last).to_contain_text('Keep my edited bank')
+    with host.connect() as conn:
+        family = dict(conn.execute('SELECT * FROM families').fetchone())
+    before = snapshot(host, family['id'])
+    page.wait_for_function('window.__sockets.some(ws => ws.readyState === 1) && window.__frames.length > 0')
+    mirror = ctx.new_page()
+    mirror.goto(origin + '/')
+    mirror.wait_for_function('window.__sockets.some(ws => ws.readyState === 1)')
+    cookie = ctx.cookies()[0]['value']
+    started, release = threading.Event(), threading.Event()
+    starts = []
+    authorize_redirect = host.oauth.authorize_redirect
+    def delayed_start(*args, **kwargs):
+        starts.append(time.monotonic())
+        started.set()
+        assert release.wait(timeout=10)
+        return authorize_redirect(*args, **kwargs)
+    monkeypatch.setattr(host.oauth, 'authorize_redirect', delayed_start)
+    page.locator('.dad-account summary').click()
+    # Don't wait for navigation: exercise the still-running dashboard and WSS
+    # while real Authlib startup is held, not a fake redirect/callback response.
+    page.get_by_role('link', name='Save this bank / sign in').evaluate('(a) => a.click()')
+    try:
+        assert started.wait(timeout=5)
+        page.wait_for_timeout(1200)  # More than two idle socket authorization checks.
+        assert len(starts) == 1
+        assert mirror.evaluate('window.__sockets.some(ws => ws.readyState === 1)')
+        assert ctx.request.get(origin + '/api/state').status == 200
+        frames = mirror.evaluate('window.__frames.length')
+        gift = ctx.request.post(origin + '/api/admin/gift',
+                                headers={'X-CSRF-Token': mirror.locator('meta[name="csrf-token"]').get_attribute('content')},
+                                data={'kid_id': 1, 'amount_cents': 100, 'note': 'During signup'})
+        assert gift.ok and gift.json()['ok']
+        mirror.wait_for_function('window.__frames.length > ' + str(frames))
+        api.expect(mirror.locator('#kids .big').first).to_have_text('$8.00')
+        before = snapshot(host, family['id'])
+        mirror.reload()
+        api.expect(mirror.locator('#kids .name').last).to_have_text('Keep my edited bank')
+        mirror.wait_for_function('window.__sockets.some(ws => ws.readyState === 1)')
+        assert ctx.cookies()[0]['value'] == cookie
+    finally:
+        release.set()
+    api.expect(page.locator('form[action="/billing/checkout"]')).to_have_count(1)
+    api.expect(page.locator('#kids .name').last).to_have_text('Keep my edited bank')
+    with host.connect() as conn:
+        rows = conn.execute('SELECT * FROM families').fetchall()
+        assert len(rows) == 1
+        assert rows[0]['id'] == family['id'] and rows[0]['guest_hash'] is None
+        assert rows[0]['trial_until'] == family['trial_until']
+    # Deliver a genuine denied response for the revoked SID after the rotated
+    # cookie is installed. A stale in-flight read must reload CSRF, not start OIDC.
+    # Finish any ordinary socket-loss reconciliation before injecting the stale
+    # response, so the one-shot route cannot intercept recovery's own preflight.
+    mirror.reload()
+    mirror.wait_for_function('window.__sockets.some(ws => ws.readyState === 1) && window.__frames.length > 0')
+    api.expect(mirror.locator('#kids .name').last).to_have_text('Keep my edited bank')
+    stale_statuses = []
+    def stale_read(route):
+        denied = route.fetch(headers={**route.request.headers, 'cookie': '__Host-bod-session=' + cookie})
+        stale_statuses.append(denied.status)
+        route.fulfill(response=denied)
+    mirror.route('**/api/state', stale_read, times=1)
+    mirror.evaluate('window.__stale401test = true; void backgroundRefresh()')
+    mirror.wait_for_function('!window.__stale401test && window.__sockets.some(ws => ws.readyState === 1)')
+    assert stale_statuses == [401]
+    assert len(starts) == state['token_calls'] == 1
+    assert ctx.cookies()[0]['value'] != cookie  # Rotate only at authenticated transition.
+    assert snapshot(host, family['id']) == before
+    ctx.close()
+
+
+@pytest.mark.parametrize('width', [390, 1280])
 def test_guest_idle_expiry_claim_then_subscription_and_browser_loss(browser_bank, width):
     browser, host, state, origin, api = browser_bank
     ctx = context(browser, width)
@@ -151,9 +233,14 @@ def test_guest_idle_expiry_claim_then_subscription_and_browser_loss(browser_bank
     api.expect(page.locator('#guestWelcome')).to_be_visible()
     page.locator('#tryGuestBank').click()
     page.wait_for_function('window.__sockets.some(ws => ws.readyState === 1)')
+    late_trial_until = time.time() - 38 * 86400
     with host.connect() as conn:
         family = conn.execute('SELECT * FROM families').fetchone()
-        conn.execute('UPDATE families SET trial_until=0 WHERE id=?', (family['id'],))
+        # Age the real bank past the former recovery cutoff while its actual
+        # browser cookie/socket remain present. Access pauses, not recoverability.
+        conn.execute('UPDATE families SET trial_started=?, trial_until=?, guest_expires=? WHERE id=?',
+                     (late_trial_until - 7 * 86400, late_trial_until,
+                      late_trial_until + 23 * 86400, family['id']))
     before = snapshot(host, family['id'])
     api.expect(page).to_have_url(origin + '/billing')
     api.expect(page.get_by_role('link', name='Save this bank / sign in')).to_be_visible()
@@ -166,7 +253,7 @@ def test_guest_idle_expiry_claim_then_subscription_and_browser_loss(browser_bank
     assert snapshot(host, family['id']) == before
     with host.connect() as conn:
         row = conn.execute('SELECT * FROM families WHERE id=?', (family['id'],)).fetchone()
-        assert row['trial_until'] == 0 and row['guest_hash'] is None
+        assert row['trial_until'] == late_trial_until and row['guest_hash'] is None
     # Subscription enters the existing real SDK path, stopped before external Stripe.
     def checkout(route):
         response = route.fetch(max_redirects=0)

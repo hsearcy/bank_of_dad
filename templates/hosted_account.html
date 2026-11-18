@@ -8,7 +8,7 @@
 {% if hosted_guest %}
 <p class="account-status">Trying on this device</p>
 <p class="account-note guest-warning">Clearing browser data, signing out or switching devices can lose access to this anonymous bank and its progress. Save / sync now to keep all balances, kids, settings and history. Your original trial end date stays the same.</p>
-<p class="account-note">Anonymous device access lasts up to 30 days from your first visit, including time to save your bank after the free week ends.</p>
+<p class="account-note">You can still save this bank after the free week ends while this browser keeps its token and the server keeps its data. Browsers can clear or expire stored data, so save / sync for access on other devices.</p>
 <a class="account-button account-secondary" href="/auth/login">Save this bank / sign in</a>
 {% elif session.get('device_bank') %}
 <p class="account-note">Your separate device trial is still here. Nothing was imported into this family.</p>

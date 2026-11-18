@@ -106,8 +106,9 @@ verified stable issuer/subject identity. It never links accounts by email.
    At expiry, the bank opens a styled access page; data is retained. The parent
    can save/sign in, contact support or sign out even after expiry. Anonymous
    banks must be saved before Checkout; saved families can subscribe or refresh
-   billing. The anonymous capability lasts 30 days from creation (not a 30-day
-   trial), leaving time to save the bank after its first week ends.
+   billing. There is no app-imposed deadline for saving an expired anonymous bank:
+   it stays claimable while this browser retains its token and the server retains
+   its session and bank data. Saving does not restart the free week.
    Choosing Subscribe opens Stripe Checkout for the paid **$9.99 USD/year** plan;
    it charges only after explicit confirmation, not automatically at trial end.
    Webhook reconciliation activates paid access. If delivery is delayed, the
@@ -151,10 +152,15 @@ procedure. Keep credentials/mode consistent and plan any account migration.
   separate 256-bit device capability. Only its SHA-256 digest is stored in the
   directory; the secret remains inside the server-side browser session. No
   capability appears in URLs, localStorage, HTML or WebSocket frames. HTTP and
-  idle WebSockets check the capability and its fixed 30-day expiry, as well as
-  the shared trial/paid/free access policy. Cookie clearing, browser switching,
-  sign-out or expiry can lose access to an unclaimed bank; there is no anonymous
-  recovery by family ID. No bank data is automatically deleted.
+  idle WebSockets check the capability and the shared trial/paid/free access policy.
+  The trial ends after seven days; the capability has no separate recovery cutoff.
+  Cookie clearing/eviction, browser switching, sign-out or loss of server session
+  storage can lose access to an unclaimed bank; there is no anonymous recovery by
+  family ID. Browsers may cap cookie persistence despite the requested persistent
+  cookie. No bank data is automatically deleted, but retention depends on operator
+  storage/backups; this is not a guarantee against data loss. Anonymous bank and
+  session storage grows with use: provision disk capacity and ingress limits, and
+  obtain an explicit retention policy before adding any cleanup deadline.
 - Signup binds the guest family/capability digest to the browser-bound OIDC state.
   Only after verified callback claims does a writer-serialized transaction change
   that same family's owner and revoke the anonymous capability. The bank file is
@@ -176,10 +182,15 @@ procedure. Keep credentials/mode consistent and plan any account migration.
   issuers must match exactly. Authlib checks audience, nonce, expiry and signature;
   the app also checks authorized party and recent issuance.
 - Flask-Session keeps opaque, Secure/HttpOnly/SameSite=Lax cookies backed by
-  server-side SQLite sessions. Login rotates the session ID; local sign-out deletes
-  the server session. Authenticated sessions expire after seven days; anonymous
-  sessions/cookies have the same fixed 30-day deadline as their capability and
-  do not slide on refresh or sign-in attempts. Local sign-out does **not**
+  server-side SQLite sessions. Verified callbacks rotate the session ID and CSRF
+  token at the authentication boundary; login startup keeps the guest session
+  usable while the provider responds, avoiding socket/refresh-triggered second
+  logins. A stale HTTP 401 rechecks the current cookie before starting OIDC and
+  reloads the document/CSRF if another tab has completed sign-in; writes are never
+  automatically replayed. Local sign-out deletes the server session. Authenticated
+  sessions expire after seven days; anonymous server sessions have no recovery
+  deadline and request a persistent browser cookie. Legacy retained guest tokens
+  also ignore the former recovery cutoff. Local sign-out does **not**
   sign out of the identity provider, so its next login may reuse its SSO session.
   Provider logout/revocation does not automatically revoke existing app sessions.
 - All bank pages/APIs require a valid parent session or device capability and a current entitlement.
@@ -319,6 +330,9 @@ analytics, marketing identifiers or emails are added. This is data minimization,
 
 ## Verification
 
+See [anonymous signup lifecycle verification](docs/anonymous-signup-verification.md)
+for the correction's regression evidence, exact commands and tested boundaries.
+
 ```sh
 # Free mode: base runtime + test dependencies only, no hosted credentials required.
 python -m pip install -r requirements-test.txt
@@ -348,12 +362,16 @@ tests separately exercise the PIN, animations, input preservation and polling
 fallback, and can run without any hosted runtime dependencies.
 
 Anonymous tests cover real sample provisioning, mutations/reload, cross-browser
-isolation, exact full-bank preservation through signup, fixed trial/capability
-deadlines, failed/stolen/replayed callback state, racing distinct claimants,
+isolation, exact full-bank preservation through signup, a fixed seven-day trial
+without a guest recovery cutoff, failed/stolen/replayed callback state, racing distinct claimants,
 existing-family collision/return, CSRF and idle socket revocation. Chromium at
 390px and 1280px exercises the real welcome/dashboard, editing, reload, guest WSS
 push, optional signup, collision, browser-cookie loss, anonymous expiry/contact,
-expired signup and the existing subscription route. Providers remain controlled
+signup after day 30 and the existing subscription route. Delayed real Authlib startup
+with live sockets, an in-flight mutation, ordinary tab refresh and a stale revoked-SID
+401 must still produce one login and preserve the exact edited bank. HTTP tests
+claim retained tokens at ages 31, 365 and 3650 days, including legacy session
+storage across restart/cleanup, without extending the trial. Providers remain controlled
 local fixtures; the dashboard and bank operations are not mocked.
 
 These tests do not configure or contact a real Stripe or identity-provider account.

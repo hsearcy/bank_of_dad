@@ -12,7 +12,7 @@ import re
 import secrets
 import sqlite3
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 from urllib.parse import parse_qs, urlsplit
 
@@ -20,8 +20,6 @@ from flask import abort, g, jsonify, redirect, render_template, request, session
 
 import db
 from hosted_access import TRIAL_SECONDS, access_status, migrate, support_destination
-
-DEVICE_SECONDS = 30 * 24 * 60 * 60
 
 
 def digest(value):
@@ -74,17 +72,49 @@ class Hosted:
         class DeviceSessions(SqlAlchemySessionInterface):
             def get_expiration_time(self, app, current):
                 if 'guest' in current:
-                    from datetime import datetime, timezone
-                    return datetime.fromtimestamp(current['guest_deadline'], timezone.utc)
+                    # Ask the browser to retain the opaque token, without an app
+                    # recovery deadline. Browsers may cap/evict persistent cookies.
+                    return datetime.max.replace(tzinfo=timezone.utc)
                 return super().get_expiration_time(app, current)
 
+            def _retrieve_session_data(self, store_id):
+                record = self.sql_session_model.query.filter_by(session_id=store_id).first()
+                if record:
+                    data = self.serializer.decode(record.data)
+                    # Also accept retained tokens from the old fixed-lifetime
+                    # guest sessions. Claim/logout still revoke the capability/SID.
+                    if 'guest' in data:
+                        return data
+                return super()._retrieve_session_data(store_id)
+
             def _upsert_session(self, lifetime, current, store_id):
-                if 'guest' in current:
-                    lifetime = timedelta(seconds=max(0, current['guest_deadline'] - time.time()))
-                return super()._upsert_session(lifetime, current, store_id)
+                if 'guest' not in current:
+                    return super()._upsert_session(lifetime, current, store_id)
+                # NULL means no anonymous recovery deadline; normal authenticated
+                # sessions still use Flask-Session's seven-day expiration policy.
+                try:
+                    record = self.sql_session_model.query.filter_by(session_id=store_id).first()
+                    if record is None:
+                        record = self.sql_session_model(session_id=store_id, data=b'', expiry=None)
+                        self.client.session.add(record)
+                    record.data = self.serializer.encode(current)
+                    record.expiry = None
+                    self.client.session.commit()
+                except Exception:
+                    self.client.session.rollback()
+                    raise
 
         app.config['SESSION_SQLALCHEMY'] = SQLAlchemy(app)
         app.session_interface = DeviceSessions(app, client=app.config['SESSION_SQLALCHEMY'])
+        # Upgrade retained guest sessions before the normal session_cleanup CLI
+        # can delete them under the former recovery deadline. Never extend an
+        # authenticated session or restore a deleted token/session.
+        with app.app_context():
+            interface = app.session_interface
+            for saved in interface.sql_session_model.query.filter(interface.sql_session_model.expiry.isnot(None)):
+                if 'guest' in interface.serializer.decode(saved.data):
+                    saved.expiry = None
+            interface.client.session.commit()
         self.oauth = OAuth(app).register(
             'parent', client_id=os.environ['BOD_OIDC_CLIENT_ID'],
             client_secret=os.environ['BOD_OIDC_CLIENT_SECRET'],
@@ -118,6 +148,8 @@ class Hosted:
             columns = {row[1] for row in conn.execute('PRAGMA table_info(families)')}
             if 'guest_hash' not in columns:
                 conn.execute('ALTER TABLE families ADD COLUMN guest_hash TEXT')
+                # Legacy column retained for additive schema compatibility only;
+                # anonymous recovery no longer has a time-based cutoff.
                 conn.execute('ALTER TABLE families ADD COLUMN guest_expires REAL')
                 conn.execute('ALTER TABLE families ADD COLUMN welcome_dismissed INTEGER NOT NULL DEFAULT 0')
             columns = {row[1] for row in conn.execute('PRAGMA table_info(login_states)')}
@@ -160,8 +192,7 @@ class Hosted:
         if not row:
             return False
         if row['guest_hash'] is not None:
-            return (row['guest_expires'] > time.time()
-                    and hmac.compare_digest(row['guest_hash'], digest(current.get('guest', ''))))
+            return hmac.compare_digest(row['guest_hash'], digest(current.get('guest', '')))
         # A claimed guest capability must never become an authenticated session.
         return 'guest' not in current
 
@@ -170,10 +201,6 @@ class Hosted:
         session.update(values)
         session['csrf'] = secrets.token_urlsafe(32)
         session.permanent = True
-        # Keep an expired anonymous trial claimable for 30 days from creation.
-        # Authenticated sessions retain the existing seven-day lifetime.
-        if 'guest' in values:
-            session['guest_deadline'] = values['guest_deadline']
         self.app.session_interface.regenerate(session)
 
     def start_guest(self):
@@ -195,14 +222,14 @@ class Hosted:
                 conn.close()
             with self.connect() as conn:
                 conn.execute('''INSERT INTO families
-                    (id, issuer, subject, trial_started, trial_until, guest_hash, guest_expires)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                    (id, issuer, subject, trial_started, trial_until, guest_hash)
+                    VALUES (?, ?, ?, ?, ?, ?)''',
                     (family, 'urn:bank-of-dad:guest', family, now, now + TRIAL_SECONDS,
-                     digest(capability), now + DEVICE_SECONDS))
+                     digest(capability)))
         except Exception:
             Path(path).unlink(missing_ok=True)
             raise
-        self.replace_session({'family': family, 'guest': capability, 'guest_deadline': now + DEVICE_SECONDS})
+        self.replace_session({'family': family, 'guest': capability})
 
     def guard(self):
         # Trust only the configured origin, never forwarded Host headers.
@@ -288,9 +315,16 @@ class Hosted:
         if 'device_bank' in session:
             values['device_bank'] = session['device_bank']
         if self.valid_session(row, session) and 'guest' in session:
-            values = {key: session[key] for key in ('family', 'guest', 'guest_deadline') if key in session}
-        self.replace_session(values)
-        session['browser'] = secrets.token_urlsafe(32)
+            values = {key: session[key] for key in ('family', 'guest') if key in session}
+        # Keep the current guest SID/CSRF usable throughout provider startup.
+        # Revoking it here races the dashboard's idle WebSocket recheck/refresh,
+        # which can start a second login without the guest before this responds.
+        # Rotation belongs at the verified guest callback (privilege transition).
+        # Preserve the existing reset behavior for ordinary authenticated login.
+        if 'guest' not in values:
+            self.replace_session(values)
+        if 'browser' not in session:
+            session['browser'] = secrets.token_urlsafe(32)
         # In particular after an existing-family collision, let a Google parent
         # choose a different identity rather than silently reusing provider SSO.
         options = {'prompt': 'select_account'} if 'guest' in values and self.issuer == 'https://accounts.google.com' else {}
@@ -326,7 +360,7 @@ class Hosted:
                 raise ValueError('Invalid identity claims')
         except Exception:
             # Do not expose provider errors, tokens or personal claims.
-            self.replace_session({key: session[key] for key in ('family', 'guest', 'guest_deadline', 'device_bank') if key in session})
+            self.replace_session({key: session[key] for key in ('family', 'guest', 'device_bank') if key in session})
             return 'Sign-in failed. Please try again.', 400
         with self.connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
@@ -345,7 +379,6 @@ class Hosted:
                 # Never merge, replace or delete either bank. The authenticated
                 # identity permits opening the existing bank only by explicit choice.
                 self.replace_session({'family': guest['id'], 'guest': session['guest'],
-                                      'guest_deadline': guest['guest_expires'],
                                       'bank_choice': {'family': existing['id'], 'expires': now + 600}})
                 return redirect('/auth/choose-bank')
             if can_claim:
@@ -385,7 +418,7 @@ class Hosted:
             return redirect('/')
         if request.form.get('choice') != 'existing':
             abort(400)
-        device = {'family': session['family'], 'guest': session['guest'], 'guest_deadline': session['guest_deadline']}
+        device = {'family': session['family'], 'guest': session['guest']}
         self.replace_session({'family': choice['family'], 'device_bank': device})
         return redirect('/')
 
