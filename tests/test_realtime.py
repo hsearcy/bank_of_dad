@@ -55,8 +55,9 @@ server.serve_forever()
         self.origin = "http://127.0.0.1:" + line
         self.ws_url = self.origin.replace("http:", "ws:") + "/api/updates"
         self.post("/api/admin/pin", {"new_pin": "1234"})
-        self.post("/api/admin/kid", {"name": "Synthetic"})
-        self.kid_id = self.get_state()["kids"][0]["id"]
+        if getattr(self, 'seed_kid', True):
+            self.post("/api/admin/kid", {"name": "Synthetic"})
+            self.kid_id = self.get_state()["kids"][0]["id"]
 
     def stop(self):
         self.proc.terminate()

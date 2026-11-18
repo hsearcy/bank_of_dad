@@ -114,6 +114,30 @@ def test_welcome_tour_real_targets_claim_reload_and_keyboard(browser_bank, width
     ctx.close()
 
 
+def test_short_phone_welcome_starts_at_heading_with_accessible_focus(browser_bank):
+    browser, host, providers, origin, api = browser_bank
+    ctx = context(browser, 390)
+    page = ctx.new_page()
+    page.set_viewport_size({'width': 390, 'height': 667})
+    page.goto(origin)
+    welcome = page.locator('#guestWelcome')
+    heading = page.get_by_role('heading', name='Welcome to Bank of Dad')
+    api.expect(welcome).to_be_visible()
+    assert welcome.evaluate('(el) => el.scrollHeight > el.clientHeight')
+    assert welcome.evaluate('(el) => el.scrollTop') == 0
+    api.expect(heading).to_be_focused()
+    assert heading.evaluate('(el) => { const r=el.getBoundingClientRect(); const d=el.closest("dialog").getBoundingClientRect(); return r.top >= d.top && r.bottom <= d.bottom && r.bottom <= innerHeight; }')
+    assert page.locator('#guestWelcome .welcome-icon').evaluate('(el) => el.getBoundingClientRect().top >= el.closest("dialog").getBoundingClientRect().top')
+    # Tabbing still reaches the dialog's links and CTA, not the bank underneath.
+    page.keyboard.press('Tab')
+    api.expect(page.locator('#guestWelcome a').first).to_be_focused()
+    page.locator('#tryGuestBank').focus()
+    page.keyboard.press('Enter')
+    api.expect(welcome).not_to_be_visible()
+    api.expect(page.locator('#productTour')).to_be_visible()
+    ctx.close()
+
+
 @pytest.mark.parametrize('width', [390, 1280])
 @pytest.mark.parametrize('controlled', [False, True])
 def test_hosted_awake_control_and_skip_offer(browser_bank, width, controlled):

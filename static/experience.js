@@ -3,12 +3,25 @@
 const BodExperience = (() => {
   const find = selector => document.querySelector(selector);
   let tour, step = -1, target = null, describedBy = null, returnFocus = null;
-  const steps = [
+  let steps = [];
+  const allSteps = [
     ['#dadBtn', 'Dad is your dashboard', 'Open Dad to add your kids, give money, set allowance and adjust rates. You can also save / sync a hosted bank there.'],
-    ['.reward-btn[data-kind="interest"], .btn-save', 'Collect a little growth', 'Tap Savings Interest when it’s ready. It goes back into savings, so future interest can earn interest too.'],
+    [() => find('.reward-btn[data-kind="interest"]') || find('.btn-save'), 'Collect a little growth', 'Tap Savings Interest when it’s ready. It goes back into savings, so future interest can earn interest too.'],
     ['.btn-save', 'Give saving a try', 'Save coins moves money from the wallet into savings. You choose the amount, and can take savings out again. Nothing moves during this tour.'],
     ['.btn-bond', 'Practice patience', 'Invest coins locks money for a chosen term. When it’s ready, collect the payout. Compare saving and investing on the growth chart.']
   ];
+  const stepTarget = item => typeof item[0] === 'function' ? item[0]() : find(item[0]);
+  function stepText(item, element) {
+    if (item === allSteps[0] && !find('.btn-save')) {
+      return 'Open Dad to add your first kid. Then replay this tour to explore saving, interest and investing. Nothing is added or moved during this tour.';
+    }
+    if (item === allSteps[1]) {
+      return element.matches('.reward-btn[data-kind="interest"]')
+        ? item[2] + ' There’s a little ready to try now.'
+        : 'Start with Save coins to put money into savings. Savings Interest appears when there’s some ready to collect; it goes back into savings to earn interest too. Nothing moves during this tour.';
+    }
+    return item[2];
+  }
   function clearTarget() {
     if (!target) return;
     target.classList.remove('tour-target');
@@ -22,8 +35,10 @@ const BodExperience = (() => {
   function point(scroll = false) {
     clearTarget();
     if (tour.hidden || step < 0) return;
-    target = find(steps[step][0]);
+    target = stepTarget(steps[step]);
     if (!target) return;
+    find('#tourText').textContent = stepText(steps[step], target);
+    sizeTour();
     describedBy = target.getAttribute('aria-describedby');
     target.classList.add('tour-target');
     target.setAttribute('aria-describedby', [describedBy, 'tourText'].filter(Boolean).join(' '));
@@ -38,9 +53,7 @@ const BodExperience = (() => {
   }
   function showStep() {
     find('#tourTitle').textContent = `${step + 1} of ${steps.length} · ${steps[step][1]}`;
-    find('#tourText').textContent = steps[step][2] + (step === 1 && find('.reward-btn[data-kind="interest"]') ? ' There’s a little ready to try now.' : '');
     find('#tourNext').textContent = step === steps.length - 1 ? 'Done' : 'Next';
-    sizeTour();
     find('#tourTitle').focus({preventScroll: true});
     point(true);
   }
@@ -57,10 +70,12 @@ const BodExperience = (() => {
   }
   function offer() {
     returnFocus = document.activeElement.closest('button, a, input, [tabindex]') || find('#dadBtn');
+    // Only offer controls that exist in this bank; an empty bank starts with Dad.
+    steps = allSteps.filter(item => stepTarget(item));
     step = -1;
     tour.hidden = false;
     find('#tourTitle').textContent = 'A quick look around?';
-    find('#tourText').textContent = 'Four quick pointers, right here in your bank. Skip any time — or explore on your own.';
+    find('#tourText').textContent = 'Quick pointers, right here in your bank. Skip any time — or explore on your own.';
     find('#tourNext').textContent = 'Show me around';
     sizeTour();
     find('#tourNext').focus({preventScroll: true});
