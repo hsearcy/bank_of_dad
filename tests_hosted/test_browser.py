@@ -39,7 +39,7 @@ def test_browser_parent_to_family_bank_and_signout(hosted_app):
             page = context.new_page()
             errors = []
             page.on('pageerror', lambda error: errors.append(str(error)))
-            page.goto(origin + '/')
+            page.goto(origin + '/auth/login')
             sync_api.expect(page.locator('#dadBtn')).to_be_visible()
             page.locator('#dadBtn').click()
             page.locator('.dad-account summary').click()

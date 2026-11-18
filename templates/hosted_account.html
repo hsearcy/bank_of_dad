@@ -5,6 +5,18 @@
   <span class="access-badge access-{{ account.kind }}">{% if account.kind == 'paid' %}Subscribed{% elif account.kind == 'free' %}Free access{% elif account.kind == 'trial' %}Free trial{% else %}Access paused{% endif %}</span>
 </div>
 {% endif %}
+{% if hosted_guest %}
+<p class="account-status">Trying on this device</p>
+<p class="account-note guest-warning">Clearing browser data, signing out or switching devices can lose access to this anonymous bank and its progress. Save / sync now to keep all balances, kids, settings and history. Your original trial end date stays the same.</p>
+<p class="account-note">Anonymous device access lasts up to 30 days from your first visit, including time to save your bank after the free week ends.</p>
+<a class="account-button account-secondary" href="/auth/login">Save this bank / sign in</a>
+{% elif session.get('device_bank') %}
+<p class="account-note">Your separate device trial is still here. Nothing was imported into this family.</p>
+<form action="/auth/device-bank" method="post">
+  <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
+  <button class="account-button account-secondary">Return to this device’s trial</button>
+</form>
+{% endif %}
 {% if account.kind == 'trial' %}
 <p class="account-status">{{ account.days_left }} {{ 'day' if account.days_left == 1 else 'days' }} left to try your family bank.</p>
 <p class="account-note">Your free week ends {{ account.until_label }}. No card needed, and no automatic charge when it ends.</p>
@@ -20,10 +32,14 @@
 {% endif %}
 {% if account.kind in ('trial', 'expired') %}
 <div class="account-price"><strong>$9.99 <span>USD per year</span></strong><small>One subscription for your whole family</small></div>
+{% if not hosted_guest %}
 <form action="/billing/checkout" method="post">
   <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
   <button class="account-button account-primary">Subscribe with Stripe <span aria-hidden="true">↗</span></button>
 </form>
+{% else %}
+<p class="account-note">Save this bank with a parent account before subscribing, so you can recover it on another device.</p>
+{% endif %}
 <p class="account-note">Subscribe only when you choose. Checkout starts a paid annual subscription; Stripe shows the charge and renewal terms before you confirm.</p>
 {% endif %}
 {% if hosted_family.customer %}
@@ -45,3 +61,4 @@
   {% else %}<p class="account-note">Ask the person who runs this Bank of Dad. A contact link hasn’t been set up yet.</p>{% endif %}
   <small class="family-reference">Family ID: <code>{{ hosted_family.id }}</code></small>
 </div>
+<p class="account-note">The price just helps cover the server. <a href="https://github.com/hsearcy/bank_of_dad" target="_blank" rel="noopener noreferrer">Self-host Bank of Dad for free ↗</a></p>

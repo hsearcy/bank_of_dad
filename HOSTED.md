@@ -9,7 +9,8 @@ hosted mode at an existing local bank database. It creates separate files under
 ## Smallest setup
 
 Use **direct Google sign-in** for the initial release; no Auth0 account, broker,
-or password system is needed. Every hosted parent needs a **Google account**
+or password system is needed. No sign-in is needed to try the hosted bank. Saving
+the bank, syncing devices or subscribing with this provider needs a **Google account**
 (not necessarily a Gmail address); parents without one cannot use this hosted
 login. Google handles account sign-in/recovery. The app requests `openid profile`,
 the minimum one additional scope Google's OIDC documentation requires beyond
@@ -84,17 +85,29 @@ verified stable issuer/subject identity. It never links accounts by email.
    the trusted proxy terminates HTTPS and talks HTTP to WSGI. No arbitrary
    forwarded scheme/origin headers are trusted.
    Trust neither arbitrary forwarded headers nor a browser-supplied callback URL.
-   Apply ingress rate limits (particularly login/billing) at the reverse proxy.
+   Apply ingress rate limits (including `/`, login and billing) at the reverse proxy.
+   A fresh anonymous dashboard visit provisions a real bank file; repeated visits
+   without cookies can consume storage. There is no application-level anonymous
+   signup quota or automatic abandoned-bank cleanup in this change.
    Run as an unprivileged service user, with `umask 077` and a private persistent
    directory. Back up all hosted SQLite files together using SQLite-aware backups
    or while stopped; use local disk, not network-shared SQLite storage.
-6. Visit `/` and sign in. A new family can use the bank immediately for **7 days**
-   without a payment method; add children using nicknames in Dad controls.
-   **Dad → Subscription & sign out** shows trial status, Subscribe, payment
+6. Visit `/`: the actual dashboard opens immediately with Sample Kid ($5 spending,
+   $1 savings, $1 invested) and a dismissible welcome. There is no sign-in or
+   payment screen first. Changes are real and persist in the same browser. A new
+   family can use the bank for **7 days**, with no sign-up or payment method.
+   **Save / sync** in the welcome or Dad controls optionally claims the whole bank
+   through the configured sign-in provider; it keeps every kid, balance, bond,
+   setting and history row, along with the original trial deadline.
+   **Dad → Save / sync, subscription & sign out** shows anonymous trial status;
+   **Dad → Subscription & sign out** for saved banks shows Subscribe, payment
    management and sign-out, without a separate toolbar billing link. The section
    stays collapsed until opened so it does not get in the way of Dad controls.
    At expiry, the bank opens a styled access page; data is retained. The parent
-   can subscribe, contact support, refresh billing or sign out even after expiry.
+   can save/sign in, contact support or sign out even after expiry. Anonymous
+   banks must be saved before Checkout; saved families can subscribe or refresh
+   billing. The anonymous capability lasts 30 days from creation (not a 30-day
+   trial), leaving time to save the bank after its first week ends.
    Choosing Subscribe opens Stripe Checkout for the paid **$9.99 USD/year** plan;
    it charges only after explicit confirmation, not automatically at trial end.
    Webhook reconciliation activates paid access. If delivery is delayed, the
@@ -134,6 +147,26 @@ procedure. Keep credentials/mode consistent and plan any account migration.
 
 ## Authorization and subscription policy
 
+- Anonymous dashboard entry creates a random server-selected family ID and a
+  separate 256-bit device capability. Only its SHA-256 digest is stored in the
+  directory; the secret remains inside the server-side browser session. No
+  capability appears in URLs, localStorage, HTML or WebSocket frames. HTTP and
+  idle WebSockets check the capability and its fixed 30-day expiry, as well as
+  the shared trial/paid/free access policy. Cookie clearing, browser switching,
+  sign-out or expiry can lose access to an unclaimed bank; there is no anonymous
+  recovery by family ID. No bank data is automatically deleted.
+- Signup binds the guest family/capability digest to the browser-bound OIDC state.
+  Only after verified callback claims does a writer-serialized transaction change
+  that same family's owner and revoke the anonymous capability. The bank file is
+  not copied/imported/reseeded, and trial dates are not reset. Failed or stolen
+  callbacks cannot claim it. Competing distinct identities cannot both claim it.
+  Signup never creates a Stripe customer or automatic payment.
+- If that identity already owns another family, neither bank is changed. A simple
+  explicit choice opens the existing family or keeps this device trial; no merge
+  is implied. When opening the existing family, the separate anonymous capability
+  remains in this session so Dad can return to the device trial. It is not synced
+  or claimed by that existing account; saving it requires a different parent
+  identity. Sign-out/session loss can still lose anonymous access.
 - Authlib performs code exchange, PKCE, nonce and signed ID-token validation.
   Browser-bound state is consumed atomically in SQLite before exchange. Identity
   is the verified `(issuer, subject)`, never an email or request body family ID.
@@ -144,18 +177,21 @@ procedure. Keep credentials/mode consistent and plan any account migration.
   the app also checks authorized party and recent issuance.
 - Flask-Session keeps opaque, Secure/HttpOnly/SameSite=Lax cookies backed by
   server-side SQLite sessions. Login rotates the session ID; local sign-out deletes
-  the server session. Sessions expire after seven days. Local sign-out does **not**
+  the server session. Authenticated sessions expire after seven days; anonymous
+  sessions/cookies have the same fixed 30-day deadline as their capability and
+  do not slide on refresh or sign-in attempts. Local sign-out does **not**
   sign out of the identity provider, so its next login may reuse its SSO session.
   Provider logout/revocation does not automatically revoke existing app sessions.
-- All bank pages/APIs require this parent session and a current entitlement.
+- All bank pages/APIs require a valid parent session or device capability and a current entitlement.
   Existing routes run against the server-selected family's own SQLite database,
   including settings, PIN, ledger and history. Browser-supplied kid/transaction IDs
   are only local IDs in that family's database. Hosted mutations take a SQLite
   writer lock before their domain reads to avoid concurrent lost balance updates.
 - The parent login replaces the local Dad PIN in hosted mode. There are **no child
-  logins/restricted devices, co-parent invitations, family switching or membership
+  logins/restricted devices, co-parent invitations, general family switching or membership
   management** in this initial slice. Anyone using a signed-in parent browser can
-  use every control, including spend, gifts, editing and demo fast-forward. Do not
+  use every control, including spend, gifts, editing and demo fast-forward. An
+  anonymous device has the same full controls for its own bank. Do not
   present that browser session as restricted child access.
 - Checkout and portal use only the family-to-customer association stored by the
   server. The Price and quantity are server configured. Repeated open Checkout
@@ -190,11 +226,11 @@ procedure. Keep credentials/mode consistent and plan any account migration.
 - Expiry is checked server-side for every bank request and idle/open WebSockets.
   After expiry without paid/free access, bank reads and writes return 402 (the
   dashboard redirects to `/billing`). Family data is **never deleted**, and billing,
-  status refresh and sign-out remain available. Free self-hosting has no trial,
+  saving/sign-in, contact, status refresh and sign-out remain available. Free self-hosting has no trial,
   directory migration, payment gate or hosted configuration requirement.
 - `/api/updates` is also session/entitlement protected, with exact configured
   public Origin and Host validation before upgrade. Its channel is selected from
-  the authenticated family's server-owned ID, never a request parameter. Only
+  the authorized family's server-owned ID, never a request parameter. Only
   successful committed bank routes enqueue that family's content-free signal.
   Before initial delivery and each later signal, and every 0.5 seconds while
   idle, the socket rereads the stored session and entitlement; revoked/expired
@@ -289,7 +325,7 @@ python -m pip install -r requirements-test.txt
 python -m unittest discover -s tests -v
 # Hosted tests: install optional test tools in a disposable environment.
 python -m pip install -r requirements-hosted.txt -r requirements-test.txt pytest
-python -m pytest tests_hosted/test_hosted.py tests_hosted/test_trial_access.py tests_hosted/test_duplicate_subscription.py tests_hosted/test_hosted_realtime.py -q
+python -m pytest tests_hosted/test_hosted.py tests_hosted/test_guest.py tests_hosted/test_trial_access.py tests_hosted/test_duplicate_subscription.py tests_hosted/test_hosted_realtime.py -q
 # Actual Chromium UI and hosted WSS isolation/reconnect tests (system Chromium).
 python -m pip install playwright
 BOD_TEST_CHROMIUM=/usr/bin/chromium python -m pytest tests_hosted -q
@@ -310,6 +346,15 @@ Chromium also exercises the actual hosted UI with polling disabled, family-isola
 push, reconnect, anonymous socket denial and entitlement expiry. Free-mode browser
 tests separately exercise the PIN, animations, input preservation and polling
 fallback, and can run without any hosted runtime dependencies.
+
+Anonymous tests cover real sample provisioning, mutations/reload, cross-browser
+isolation, exact full-bank preservation through signup, fixed trial/capability
+deadlines, failed/stolen/replayed callback state, racing distinct claimants,
+existing-family collision/return, CSRF and idle socket revocation. Chromium at
+390px and 1280px exercises the real welcome/dashboard, editing, reload, guest WSS
+push, optional signup, collision, browser-cookie loss, anonymous expiry/contact,
+expired signup and the existing subscription route. Providers remain controlled
+local fixtures; the dashboard and bank operations are not mocked.
 
 These tests do not configure or contact a real Stripe or identity-provider account.
 Trial tests exercise actual signup without Checkout, fixed expiry across sign-in,

@@ -1387,6 +1387,18 @@ startLiveUpdates();
 (async () => {
   await refresh();
   await ensurePinSetup();      // force a Dad PIN on first launch
+  const welcome = document.querySelector('#guestWelcome');
+  if (welcome) {
+    const dismiss = async () => {
+      const response = await fetch('/auth/welcome', {method: 'POST', headers: {
+        'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content
+      }});
+      if (response.ok) welcome.close();
+    };
+    document.querySelector('#tryGuestBank').onclick = () => dismiss().catch(() => {});
+    welcome.addEventListener('cancel', event => { event.preventDefault(); dismiss().catch(() => {}); });
+    welcome.showModal();
+  }
 })().catch(() => {}); // offline startup is retried by live sync / reconciliation
 setInterval(backgroundRefresh, 30000); // fallback + time-derived rewards
 setInterval(tick, 1000);     // smooth live growth of savings + bonds

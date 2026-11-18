@@ -39,7 +39,7 @@ def test_no_card_onboarding_dad_access_expiry_and_restore(hosted_app, width):
             page = context.new_page()
             errors = []
             page.on('pageerror', lambda error: errors.append(str(error)))
-            page.goto(origin + '/')  # Actual Authlib/PKCE signup through fixture HTTP.
+            page.goto(origin + '/auth/login')  # Direct signup remains supported too.
             sync_api.expect(page.locator('#dadBtn')).to_be_visible()
             assert page.url == origin + '/'
             assert state['customers'] == state['checkouts'] == []

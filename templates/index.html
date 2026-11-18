@@ -28,7 +28,7 @@
       <h2>👨‍👧 Dad Controls</h2>
       {% if hosted_account is defined %}
       <details class="dad-account" aria-label="Family subscription">
-        <summary>Subscription &amp; sign out
+        <summary>{% if hosted_guest %}Save / sync, subscription &amp; sign out{% else %}Subscription &amp; sign out{% endif %}
           <span class="access-badge access-{{ hosted_account.kind }}">{% if hosted_account.kind == 'trial' %}Free trial · {{ hosted_account.days_left }}d left{% elif hosted_account.kind == 'paid' %}Subscribed{% else %}Free access{% endif %}</span>
         </summary>
         {% with in_dad_modal=true %}{% include 'hosted_account.html' %}{% endwith %}
@@ -71,6 +71,20 @@
   </div>
 
   <div id="confetti" class="confetti-layer"></div>
+
+  {% if hosted_guest|default(false) and not hosted_family.welcome_dismissed %}
+  <dialog id="guestWelcome" class="guest-welcome" aria-labelledby="guestWelcomeTitle">
+    <span class="welcome-icon" aria-hidden="true">🌱</span>
+    <h2 id="guestWelcomeTitle">Welcome to Bank of Dad</h2>
+    <p>A little family bank for practicing spending, saving and investing — not a real bank. Sample Kid has $5 to spend, $1 saved and $1 invested. Try the controls, or make it your own in Dad.</p>
+    <p><strong>Try it for a week on this device. No sign-up or card needed.</strong> Changes are saved in this browser’s bank.</p>
+    <p class="guest-warning">Without an account, clearing browser data or switching devices can lose access to your bank and progress. Save / sync with an account any time in Dad, keeping everything you’ve done.</p>
+    <p>After 7 days, subscribe or ask for free access. No automatic charge. The $9.99/year price just helps cover the server.</p>
+    <button id="tryGuestBank" class="account-button account-primary" autofocus>Let’s try it</button>
+    <a href="/auth/login" class="welcome-signup">Save / sync this bank now (optional)</a>
+    <p class="account-note">Prefer your own server? <a href="https://github.com/hsearcy/bank_of_dad" target="_blank" rel="noopener noreferrer">Self-host for free ↗</a></p>
+  </dialog>
+  {% endif %}
 
   <script src="/static/app.js"></script>
 </body>
