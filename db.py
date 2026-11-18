@@ -76,10 +76,21 @@ CREATE TABLE IF NOT EXISTS settings (
 """
 
 
-def get_conn():
-    conn = sqlite3.connect(DB_PATH)
+def get_conn(path=None):
+    hosted_request = False
+    if path is None:
+        from flask import g, has_request_context
+        path = getattr(g, 'bank_db_path', None) if has_request_context() else None
+        if os.environ.get('BANK_OF_DAD_MODE') == 'hosted' and path is None:
+            raise RuntimeError('Hosted bank access requires an authenticated family')
+        hosted_request = os.environ.get('BANK_OF_DAD_MODE') == 'hosted'
+    conn = sqlite3.connect(path or DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    if hosted_request:
+        # Existing domain operations read then write; serialize before their first
+        # read to prevent concurrent parent sessions from losing balance updates.
+        conn.execute('BEGIN IMMEDIATE')
     return conn
 
 
@@ -96,10 +107,10 @@ def set_setting(conn, key, value):
     )
 
 
-def init_db(seed=True):
+def init_db(seed=True, path=None):
     """Initialize an empty database; seed is retained for API compatibility."""
-    os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
-    conn = get_conn()
+    os.makedirs(os.path.dirname(os.path.abspath(path or DB_PATH)), exist_ok=True)
+    conn = get_conn(path)
     try:
         conn.executescript(SCHEMA)
         _migrate(conn)

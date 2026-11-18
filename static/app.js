@@ -32,22 +32,135 @@ const serverNow = () => SERVER_NOW + (Date.now() / 1000 - FETCH_AT);
 
 let DAD_PIN = null; // remembered after a correct entry, for this page session
 
-async function api(path, body) {
+async function api(path, body, options = {}) {
   const headers = { "Content-Type": "application/json" };
+  const csrf = document.querySelector('meta[name="csrf-token"]');
+  if (csrf) headers["X-CSRF-Token"] = csrf.content;
   if (DAD_PIN && path.startsWith("/api/admin")) headers["X-Dad-Pin"] = DAD_PIN;
   const res = await fetch(path, {
     method: body ? "POST" : "GET",
     headers,
     body: body ? JSON.stringify(body) : undefined,
+    signal: options.signal,
   });
+  if (res.status === 401 || res.status === 402) {
+    window.location.replace(res.status === 401 ? '/auth/login' : '/billing');
+    throw new Error('Parent sign-in or subscription required');
+  }
   return res.json();
 }
 
-async function refresh() {
-  STATE = await api("/api/state");
-  SERVER_NOW = STATE.server_now || Date.now() / 1000;
-  FETCH_AT = Date.now() / 1000;
+// Serialize snapshots. An invalidation during a read queues one more read, so
+// older HTTP responses cannot overwrite newer state and bursts stay bounded.
+let refreshing = null, refreshAgain = false;
+let activeCollects = 0, renderNotBefore = 0, renderTimer = null;
+function renderSnapshot() {
+  clearTimeout(renderTimer);
+  const delay = renderNotBefore - performance.now();
+  if (activeCollects || delay > 0) {
+    renderTimer = setTimeout(renderSnapshot, Math.max(50, delay));
+    return;
+  }
   render();
+  const graph = $("#modal .expanded-chart");
+  if (graph && !$("#modal").classList.contains("hidden")) {
+    graph._refresh?.();
+  }
+}
+
+function refresh() {
+  refreshAgain = true;
+  if (!refreshing) {
+    refreshing = (async () => {
+      try {
+        do {
+          refreshAgain = false;
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 10000);
+          let next;
+          try { next = await api("/api/state", null, { signal: controller.signal }); }
+          finally { clearTimeout(timeout); }
+          if (!Array.isArray(next.kids) || !next.config) throw new Error("Invalid bank state");
+          STATE = next;
+          SERVER_NOW = STATE.server_now || Date.now() / 1000;
+          FETCH_AT = Date.now() / 1000;
+          renderSnapshot();
+        } while (refreshAgain);
+      } finally { refreshing = null; }
+    })();
+  }
+  return refreshing;
+}
+
+// Socket messages only invalidate: balances still come from the existing API.
+// Reconnect and resume refetch, while the 30s reconciliation below also covers
+// unsupported/proxy-blocked WebSockets, lost notifications and lazy accrual.
+const backgroundRefresh = () => refresh().catch(() => {});
+function startLiveUpdates() {
+  let socket = null, retryTimer = null, handshakeTimer = null;
+  let stopped = false, retryDelay = 1000;
+  const connect = () => {
+    if (stopped || socket || !("WebSocket" in window)) return;
+    clearTimeout(retryTimer);
+    retryTimer = null;
+    let ws;
+    try {
+      const url = new URL("/api/updates", location.href);
+      url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+      ws = new WebSocket(url);
+    } catch (e) { retry(); return; }
+    socket = ws;
+    handshakeTimer = setTimeout(() => {
+      if (socket === ws) ws.close();
+    }, 10000);
+    ws.onopen = () => {
+      if (socket !== ws) return;
+      clearTimeout(handshakeTimer);
+      retryDelay = 1000;
+      backgroundRefresh();
+    };
+    ws.onmessage = (event) => {
+      if (socket !== ws) return;
+      try {
+        if (JSON.parse(event.data).type === "state_changed") backgroundRefresh();
+      } catch (e) { /* Ignore unknown/malformed notifications. */ }
+    };
+    ws.onclose = () => {
+      if (socket !== ws) return;
+      clearTimeout(handshakeTimer);
+      socket = null;
+      // Hosted sockets can lose authorization while idle. Recheck via HTTP on
+      // loss too: a browser/proxy may hide the policy close code.
+      if (document.querySelector('meta[name="csrf-token"]')) backgroundRefresh();
+      retry();
+    };
+    ws.onerror = () => { if (socket === ws) ws.close(); };
+  };
+  const retry = () => {
+    if (stopped || retryTimer) return;
+    retryTimer = setTimeout(connect, retryDelay);
+    retryDelay = Math.min(30000, retryDelay * 2);
+  };
+  const resume = () => {
+    stopped = false;
+    backgroundRefresh();
+    connect();
+  };
+  window.addEventListener("pagehide", () => {
+    stopped = true;
+    clearTimeout(retryTimer);
+    retryTimer = null;
+    clearTimeout(handshakeTimer);
+    const old = socket;
+    socket = null; // late callbacks must not restart a retired connection
+    if (old) old.close();
+  });
+  window.addEventListener("pageshow", resume);
+  window.addEventListener("online", resume);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") resume();
+  });
+  connect();
 }
 
 /* ---- SVG stock chart (hand-rolled, dependency-free) ------------------- */
@@ -625,7 +738,11 @@ function onCollect(k, kind, ev) {
   btn.remove();                                  // gone immediately — can't re-tap
 
   // fire the real collect in the background; resync when it returns (or fails)
-  api("/api/collect", { kid_id: k.id, kind }).then(refresh, refresh);
+  activeCollects++;
+  api("/api/collect", { kid_id: k.id, kind }).catch(() => {}).finally(() => {
+    activeCollects--;
+    backgroundRefresh();
+  });
 }
 
 // Spin the hero number UP by `delta`, starting from whatever's currently shown
@@ -640,6 +757,7 @@ function spinHero(kidId, delta) {
   const fromC = Math.round((parseFloat(bigEl.textContent.replace(/[^0-9.]/g, "")) || 0) * 100);
   const toC = fromC + delta;
   const start = performance.now(), dur = 1100;
+  renderNotBefore = Math.max(renderNotBefore, start + dur);
   const step = (t) => {
     const p = Math.min(1, (t - start) / dur);
     const ease = 1 - Math.pow(1 - p, 3);          // easeOutCubic
@@ -671,11 +789,12 @@ function openGraphModal(k) {
         <h2>${esc(current.emoji)} ${esc(current.name)}'s Money Over Time</h2>
         <button class="graph-close" aria-label="Close graph">✕</button>
       </div>
-      <div class="expanded-chart">${moneyChart(k, true)}</div>
+      <div class="expanded-chart">${moneyChart(current, true)}</div>
       <div class="graph-future-controls">
         <span>Look into the future:</span>
         ${FUTURE_RANGES.map(([key, label]) => `<button class="future-rng ${key === chartFutureRange ? "on" : ""}" data-future-range="${key}">${label}</button>`).join("")}
       </div>`;
+    $(".expanded-chart", card)._refresh = draw;
     $(".graph-close", card).onclick = modalClose;
     wireChartTips(card);
     $$(".future-rng", card).forEach((button) => {
@@ -1099,7 +1218,7 @@ function askPin(err, opts = {}) {
 // so the Dad controls are never left unprotected.
 async function ensurePinSetup() {
   const st = await api("/api/admin/status");
-  if (st.pin_set) return;
+  if (st.pin_set || st.hosted_parent) return;
   let err = "Welcome! Create a Dad PIN to protect the controls.";
   while (true) {
     const p1 = await askPin(err, { mandatory: true, title: "🔒 Set Dad PIN" });
@@ -1264,9 +1383,10 @@ if ("serviceWorker" in navigator && window.isSecureContext) {
 }
 
 wireGlobal();
+startLiveUpdates();
 (async () => {
   await refresh();
   await ensurePinSetup();      // force a Dad PIN on first launch
-})();
-setInterval(refresh, 30000); // gentle auto-refresh for the radiator
+})().catch(() => {}); // offline startup is retried by live sync / reconciliation
+setInterval(backgroundRefresh, 30000); // fallback + time-derived rewards
 setInterval(tick, 1000);     // smooth live growth of savings + bonds
