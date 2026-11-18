@@ -1,6 +1,6 @@
 """Hosted access policy and trusted local operator CLI (standard library only).
 
-No public grant endpoint. Directory write access is the operator authority.
+The local CLI uses filesystem authority; the optional owner UI uses verified identity.
 """
 import argparse
 from datetime import datetime, timezone
@@ -32,6 +32,8 @@ def migrate(conn, now=None):
         conn.execute('UPDATE families SET trial_started=?, trial_until=?', (stamp, stamp + TRIAL_SECONDS))
     if 'free_access' not in columns:
         conn.execute('ALTER TABLE families ADD COLUMN free_access INTEGER NOT NULL DEFAULT 0 CHECK(free_access IN (0,1))')
+    if 'billing_reconciled_at' not in columns:
+        conn.execute('ALTER TABLE families ADD COLUMN billing_reconciled_at REAL')
     conn.execute('''CREATE TABLE IF NOT EXISTS access_audit (
         id INTEGER PRIMARY KEY, family TEXT NOT NULL REFERENCES families(id),
         action TEXT NOT NULL CHECK(action IN ('grant','revoke')),
@@ -66,6 +68,22 @@ def support_destination():
     raise ValueError('BOD_SUPPORT_URL must be an HTTPS contact URL or mailto:address (no credentials or whitespace)')
 
 
+def set_free_access(conn, family, action, reason, operator, now=None):
+    """Caller owns a writer transaction; flag and audit must commit together."""
+    if not conn.in_transaction:
+        raise ValueError('An explicit transaction is required')
+    if not re.fullmatch(r'[0-9a-f]{32}', family) or action not in ('grant', 'revoke'):
+        raise ValueError('Invalid family or action')
+    reason = reason.strip()
+    if not reason or len(reason) > 300:
+        raise ValueError('Use an audit reason between 1 and 300 characters')
+    if not conn.execute('SELECT 1 FROM families WHERE id=?', (family,)).fetchone():
+        raise LookupError('Family not found')
+    conn.execute('UPDATE families SET free_access=? WHERE id=?', (int(action == 'grant'), family))
+    conn.execute('INSERT INTO access_audit(family, action, reason, operator, created) VALUES (?, ?, ?, ?, ?)',
+                 (family, action, reason, operator, time.time() if now is None else now))
+
+
 def main():
     parser = argparse.ArgumentParser(description='Local operator-only hosted free access. Verify identity with show before grant/revoke.')
     parser.add_argument('--data', required=True, help='Explicit persistent BOD_HOSTED_DATA directory; never a family bank file')
@@ -96,15 +114,13 @@ def main():
                 if row is None:
                     parser.error('Family not found; nothing changed')
                 if args.command in ('grant', 'revoke'):
-                    conn.execute('UPDATE families SET free_access=? WHERE id=?', (int(args.command == 'grant'), args.family))
-                    conn.execute('INSERT INTO access_audit(family, action, reason, operator, created) VALUES (?, ?, ?, ?, ?)',
-                                 (args.family, args.command, args.reason.strip(), 'uid:' + str(os.getuid()), time.time()))
+                    set_free_access(conn, args.family, args.command, args.reason, 'uid:' + str(os.getuid()))
                     # Read back in this transaction; output only after commit succeeds.
                     row = conn.execute('SELECT * FROM families WHERE id=?', (args.family,)).fetchone()
                 rows = [row]
             output = [dict(row) for row in rows]
         print(json.dumps(output, indent=2))
-    except sqlite3.Error as error:
+    except (sqlite3.Error, ValueError) as error:
         parser.error('Directory operation failed (check path, permissions and app migration): ' + str(error))
 
 

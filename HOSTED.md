@@ -262,10 +262,60 @@ procedure. Keep credentials/mode consistent and plan any account migration.
   Locking is deliberately simple and globally serializes billing calls: suitable
   for a small single-host deployment, not a high-throughput multi-region service.
 
-## Operator-only free access
+## Private owner panel
 
-There is **no HTTP/admin grant endpoint** and no client-supplied entitlement.
-Run `hosted_access.py` as the trusted service user/operator who owns the private
+The hosted-only `/owner` page lists saved parent sign-ins and device-only guest
+banks by Family ID, with effective trial/paid/free/expired access, trial dates,
+stored paid-through date, last Stripe reconciliation and last free-access change.
+Search accepts an exact Family ID or its lowercase hexadecimal prefix; lists are
+paged at 50 families. There are no parent emails/names, bank balances, child
+details, ledger views, deletions or Stripe actions in the panel.
+
+It is **disabled (404) unless explicitly configured**. To enable it in your private
+service environment, configure an exact verified Google identity allowlist:
+
+```text
+BOD_OWNER_IDENTITIES=[{"issuer":"https://accounts.google.com","subject":"<your exact verified Google sub>"}]
+```
+
+Do not use the placeholder, an email, a Family ID or a client ID as the subject.
+First sign in normally with your own Google account. Match your own Family ID
+(shown in Dad account controls or `/billing`) using the trusted local `show` CLI
+below, and copy its verified `subject` and canonical Google `issuer` from the
+private directory. Do not guess an identity or ask a customer for tokens. Configure
+only intended owners, then apply it through your normal authorized deployment
+process. Multiple exact pairs are supported; unset/empty/`[]` disables the panel.
+Malformed entries refuse startup. Other OIDC issuers cannot become panel owners.
+
+Bookmark `/owner`. Signed-out visitors see only the owner sign-in link, which uses
+the existing verified Google callback and returns here; ordinary parents and guest
+banks are forbidden. The server rereads the session's verified family association
+and exact issuer/subject on every owner request. No client role, email or Dad PIN
+can grant access. Owner access does not require that owner's family to have a
+current trial/subscription. Lists are not public or available through a debug API.
+Routes are not registered in free self-hosting, even if this variable is present.
+
+Grant needs one short nonsensitive audit reason (1–300 characters), with no extra
+confirmation. Revoke additionally requires the checkbox confirming removal of
+only the free override. Both use the same atomic `hosted_access` flag/audit
+operation as the local CLI, recording the verified owner issuer/subject as the
+operator. POSTs require the session CSRF token **and an exact configured Origin**;
+missing/null/foreign Origin is denied. The panel reloads the exact family after
+commit. Owner pages use the hosted no-store, frame-denial and referrer policies.
+
+**This is effective app access, not live Stripe subscription status.** Reading the
+panel never calls Stripe. `billing_reconciled_at` is a nullable additive directory
+field, set only by successful existing Stripe reconciliation; older snapshots
+show “Not recorded”, not an invented date. Trial start may be the legacy grace
+migration date, not original signup. Paid access takes precedence over a free
+grant; both remain visible. **Grant/revoke never cancels Stripe or stops renewal.**
+Cancellation must be managed separately in Stripe. No new provider permissions
+or credentials are needed. See [owner-panel verification](docs/owner-panel-verification.md).
+
+## Operator-only local free-access CLI
+
+There is no client-supplied entitlement. As an alternative to the private panel,
+run `hosted_access.py` as the trusted service user/operator who owns the private
 hosted directory. Filesystem access to that directory is the authorization
 boundary: keep it private (`umask 077`, owner-only directory), do not expose this
 CLI through a web shell, and do not give support requesters shell/DB access. The
@@ -293,7 +343,8 @@ python hosted_access.py --data /absolute/private/hosted show FAMILY_ID
 
 Grants are durable and indefinite until revoked. Each grant/revoke and required
 reason is recorded atomically with the flag in `access_audit`, with family ID,
-operator OS UID and server timestamp. Keep audit reasons short and nonsensitive.
+operator OS UID (CLI) or verified owner issuer/subject (panel), and server timestamp.
+Keep audit reasons short and nonsensitive.
 The CLI outputs the stored row only after commit. Repeated grant/revoke operations
 are safe (each adds an audit entry). Revocation takes effect on the next bank
 request and the next socket recheck (normally within 0.5 seconds idle); it does
@@ -306,7 +357,8 @@ reconciliation cannot revoke a free grant. Account management remains accessible
 
 The operator stores provider issuer/subject IDs, a random family ID, Stripe customer
 and Checkout identifiers/URL/expiry, entitlement expiry, trial dates, free-access
-flag and operator audit notes/UID/timestamps, event IDs/payload
+flag, last Stripe reconciliation timestamp and operator audit notes/UID or owner
+issuer/subject/timestamps, event IDs/payload
 fingerprints, browser sessions and short-lived
 login state, plus the actual family bank data: children’s display names/emojis,
 balances, allowances/rates, investments, spending/gift notes and history. Stripe

@@ -156,6 +156,8 @@ class Hosted:
             if 'guest_family' not in columns:
                 conn.execute('ALTER TABLE login_states ADD COLUMN guest_family TEXT')
                 conn.execute('ALTER TABLE login_states ADD COLUMN guest_hash TEXT')
+        from owner_panel import OwnerPanel
+        self.owner_panel = OwnerPanel(self)
         app.before_request(self.guard)
         app.after_request(self.headers)
         app.context_processor(self.account_context)
@@ -248,6 +250,8 @@ class Hosted:
         # Trust only the configured origin, never forwarded Host headers.
         if request.host != urlsplit(self.origin).netloc:
             abort(400)
+        if request.path == '/owner' or request.path.startswith('/owner/') or request.path.startswith('/api/owner/'):
+            return self.owner_panel.guard()
         public = request.endpoint in ('hosted_login', 'hosted_callback', 'hosted_signed_out', 'hosted_webhook', 'static', 'service_worker')
         if public:
             return None
@@ -329,6 +333,8 @@ class Hosted:
             values['device_bank'] = session['device_bank']
         if self.valid_session(row, session) and 'guest' in session:
             values = {key: session[key] for key in ('family', 'guest') if key in session}
+        if request.args.get('owner') == '1':
+            values['owner_return'] = True
         # Keep the current guest SID/CSRF usable throughout provider startup.
         # Revoking it here races the dashboard's idle WebSocket recheck/refresh,
         # which can start a second login without the guest before this responds.
@@ -336,6 +342,8 @@ class Hosted:
         # Preserve the existing reset behavior for ordinary authenticated login.
         if 'guest' not in values:
             self.replace_session(values)
+        if values.get('owner_return'):
+            session['owner_return'] = True
         if 'browser' not in session:
             session['browser'] = secrets.token_urlsafe(32)
         # In particular after an existing-family collision, let a Google parent
@@ -411,8 +419,9 @@ class Hosted:
         values = {'family': family}
         if 'device_bank' in session:
             values['device_bank'] = session['device_bank']
+        owner_return = session.get('owner_return', False)
         self.replace_session(values)
-        return redirect('/')
+        return redirect('/owner' if owner_return else '/')
 
     def dismiss_welcome(self):
         if g.hosted_family['guest_hash'] is not None:
@@ -490,7 +499,8 @@ class Hosted:
                     if sub.get('cancel_at'):
                         end = min(end, sub['cancel_at'])
                     until = max(until, end)
-        conn.execute('UPDATE families SET paid_until=? WHERE customer=?', (until, customer))
+        conn.execute('UPDATE families SET paid_until=?, billing_reconciled_at=? WHERE customer=?',
+                     (until, time.time(), customer))
         return until
 
     def checkout(self):

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#ffb302">
+  <title>Bank of Dad — owner</title>
+  <link rel="icon" href="/static/icon-192.png">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/owner.css">
+</head>
+<body class="billing-page owner-page">
+  <header class="topbar billing-topbar"><h1>🏦 Bank of Dad</h1><a class="dad-btn" href="/">Your bank</a></header>
+  <main class="owner-layout">
+    <p class="billing-eyebrow">Private owner controls</p>
+    <h2>Families &amp; access</h2>
+    {% if sign_in %}
+      <section class="owner-card"><p>Sign in with the Google identity privately configured by the operator. Family sign-in alone does not grant owner access.</p>
+      <a class="account-button" href="/auth/login?owner=1">Sign in to owner controls</a></section>
+    {% else %}
+      <p>One saved parent sign-in per family, or a device-only guest bank. No emails or names are stored for sign-in; use the Family ID shared through your trusted support channel.</p>
+      <aside class="owner-notice"><strong>Access now, not live Stripe status.</strong> Paid access comes from the last reconciled database snapshot, not a live subscription lookup. Trial and paid expiry use the server clock. Free grants are independent of billing: <strong>granting or revoking free access never stops Stripe renewal or cancels a subscription.</strong> Manage cancellation separately in Stripe.</aside>
+      <form class="owner-search" method="get" action="/owner">
+        <label for="family-search">Find a Family ID <small>(full ID or beginning)</small></label>
+        <div><input id="family-search" name="family" value="{{ query }}" maxlength="32" autocomplete="off" spellcheck="false" placeholder="Paste a family ID"><button class="account-button">Search</button><a href="/owner">Show all</a></div>
+      </form>
+      {% if invalid_search %}<p class="owner-error" role="alert">Use 1–32 lowercase hexadecimal characters from the Family ID.</p>{% endif %}
+      {% if error %}<p class="owner-error" role="alert">{{ error }}</p>{% endif %}
+      {% if saved %}<p class="owner-success" role="status">Free-access change saved. The family below was read back after commit.</p>{% endif %}
+      {% if updated %}<p class="owner-updated">Access checked {{ updated }} · <a href="{{ url_for('owner_panel', family=query, page=page) }}">Reload status</a></p>{% endif %}
+      <div class="owner-families">
+      {% for family in families %}
+        <article class="owner-card" data-family="{{ family.id }}">
+          <div class="owner-card-heading"><h3>{{ 'Device-only guest' if family.is_guest else 'Saved parent sign-in' }}</h3><span class="owner-status owner-status-{{ family.status.kind }}">{{ {'paid':'Paid access','free':'Free access','trial':'Trial','expired':'Expired'}[family.status.kind] }}</span></div>
+          <p class="owner-id-label">Family ID <code class="owner-id">{{ family.id }}</code></p>
+          <dl>
+            <div><dt>Trial started / legacy grace</dt><dd>{{ date_label(family.trial_started) }}</dd></div>
+            <div><dt>Trial ends</dt><dd>{{ date_label(family.trial_until) }}</dd></div>
+            <div><dt>Paid access through (stored)</dt><dd>{{ date_label(family.paid_until) if family.paid_until else 'No stored paid access' }}</dd></div>
+            <div><dt>Stripe last reconciled</dt><dd>{{ date_label(family.billing_reconciled_at) }}</dd></div>
+            <div><dt>Free override</dt><dd>{{ 'Granted · until revoked' if family.free_access else 'Not granted' }}</dd></div>
+            <div><dt>Last free-access change</dt><dd>{{ date_label(family.changed_at) }}</dd></div>
+          </dl>
+          {% if family.status.kind == 'paid' and family.free_access %}<p class="owner-hint">Paid access takes precedence. The free grant will still apply after paid access expires.</p>{% endif %}
+          <form action="/owner/access" method="post" class="owner-access-form">
+            <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
+            <input type="hidden" name="family" value="{{ family.id }}">
+            <input type="hidden" name="action" value="{{ 'revoke' if family.free_access else 'grant' }}">
+            <label for="reason-{{ family.id }}">Audit reason <small>(no personal information)</small></label>
+            <input id="reason-{{ family.id }}" name="reason" maxlength="300" required autocomplete="off" placeholder="Short reason for this change">
+            {% if family.free_access %}
+              <label class="owner-confirm"><input type="checkbox" name="confirm_revoke" value="yes" required> Remove only the free override; paid access and any remaining trial stay unchanged.</label>
+              <button class="account-button account-secondary">Revoke free access</button>
+            {% else %}<button class="account-button">Grant free access</button>{% endif %}
+          </form>
+        </article>
+      {% else %}<p>No matching families.</p>{% endfor %}
+      </div>
+      <nav class="owner-pagination" aria-label="Family pages">
+        {% if page and page > 1 %}<a href="{{ url_for('owner_panel', family=query, page=page-1) }}">Previous</a>{% endif %}
+        {% if page %}<span>Page {{ page }} · up to 50 families</span>{% endif %}
+        {% if has_more %}<a href="{{ url_for('owner_panel', family=query, page=page+1) }}">Next</a>{% endif %}
+      </nav>
+      <form action="/auth/logout" method="post" class="account-signout"><input type="hidden" name="csrf_token" value="{{ session.csrf }}"><button class="account-text-button">Sign out of Bank of Dad</button></form>
+    {% endif %}
+  </main>
+</body>
+</html>
