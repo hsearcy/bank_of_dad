@@ -15,19 +15,22 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 import requests
-from flask import Flask, jsonify, redirect, request
+from flask import Flask, jsonify, redirect, request as flask_request
 from joserfc import jwt
 from joserfc.jwk import RSAKey
 from werkzeug.serving import make_server
 
 
 @pytest.fixture
-def hosted_app(tmp_path, monkeypatch):
-    issuer = 'https://identity.example.test/'
+def hosted_app(tmp_path, monkeypatch, request):
+    # Default setup is direct Google. Network endpoints alone are replaced with
+    # loopback fixtures; Google's issuer and required scopes are preserved.
+    issuer = getattr(request, 'param', 'https://accounts.google.com')
+    monkeypatch.delenv('BOD_OIDC_ISSUER', raising=False)
     origin = 'https://bank.example.test'
     settings = {
         'BANK_OF_DAD_MODE': 'hosted', 'BOD_PUBLIC_ORIGIN': origin,
-        'BOD_OIDC_ISSUER': issuer, 'BOD_OIDC_CLIENT_ID': 'test-client',
+        'BOD_OIDC_CLIENT_ID': 'test-client',
         'BOD_OIDC_CLIENT_SECRET': 'synthetic-client-secret',
         'BOD_HOSTED_DATA': str(tmp_path / 'hosted'), 'BOD_STRIPE_PRICE_ID': 'price_family',
         'BOD_STRIPE_WEBHOOK_SECRET': 'whsec_synthetic', 'BOD_STRIPE_LIVEMODE': 'false',
@@ -35,6 +38,8 @@ def hosted_app(tmp_path, monkeypatch):
         'BANK_OF_DAD_DB': str(tmp_path / 'must-not-exist.sqlite'),
         'AUTHLIB_INSECURE_TRANSPORT': '1',
     }
+    if issuer != 'https://accounts.google.com':
+        settings['BOD_OIDC_ISSUER'] = issuer
     for k, v in settings.items():
         monkeypatch.setenv(k, v)
     provider = Flask('synthetic-providers')
@@ -57,18 +62,20 @@ def hosted_app(tmp_path, monkeypatch):
 
     @provider.get('/authorize')
     def authorize():
-        assert request.args['scope'] == 'openid'
-        assert request.args['code_challenge_method'] == 'S256'
+        expected_scope = 'openid profile' if issuer == 'https://accounts.google.com' else 'openid'
+        if flask_request.args['scope'] != expected_scope:
+            return jsonify(error='invalid_scope'), 400
+        assert flask_request.args['code_challenge_method'] == 'S256'
         code = secrets.token_urlsafe(20)
-        state['codes'][code] = dict(request.args)
+        state['codes'][code] = dict(flask_request.args)
         state['codes'][code]['subject'] = state['subject']
-        return redirect(request.args['redirect_uri'] + '?' + urlencode({'state': request.args['state'], 'code': code}))
+        return redirect(flask_request.args['redirect_uri'] + '?' + urlencode({'state': flask_request.args['state'], 'code': code}))
 
     @provider.post('/token')
     def token():
         state['token_calls'] += 1
-        data = state['codes'].pop(request.form['code'])
-        challenge = base64.urlsafe_b64encode(hashlib.sha256(request.form['code_verifier'].encode()).digest()).decode().rstrip('=')
+        data = state['codes'].pop(flask_request.form['code'])
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(flask_request.form['code_verifier'].encode()).digest()).decode().rstrip('=')
         if challenge != data['code_challenge']:
             return jsonify(error='invalid_grant'), 400
         now = int(time.time())
@@ -86,7 +93,7 @@ def hosted_app(tmp_path, monkeypatch):
 
     @provider.post('/v1/customers')
     def customer():
-        assert not request.form  # No names, emails, addresses or metadata sent.
+        assert not flask_request.form  # No names, emails, addresses or metadata sent.
         cid = 'cus_' + str(len(state['customers']) + 1)
         state['customers'].append(cid)
         return jsonify(id=cid, object='customer')
@@ -96,7 +103,7 @@ def hosted_app(tmp_path, monkeypatch):
         state['subscription_calls'] += 1
         if state['fail']:
             return jsonify(error={'type': 'api_error', 'message': 'Synthetic outage'}), 503
-        snapshot = json.loads(json.dumps(state['subscriptions'].get(request.args['customer'], [])))
+        snapshot = json.loads(json.dumps(state['subscriptions'].get(flask_request.args['customer'], [])))
         pause = state.pop('pause_subscriptions', None)
         if pause:
             pause[0].set()
@@ -106,7 +113,7 @@ def hosted_app(tmp_path, monkeypatch):
 
     @provider.post('/v1/checkout/sessions')
     def checkout():
-        data = request.form.to_dict()
+        data = flask_request.form.to_dict()
         assert data['mode'] == 'subscription'
         assert data['line_items[0][price]'] == 'price_family'
         assert data['line_items[0][quantity]'] == '1'
@@ -116,7 +123,7 @@ def hosted_app(tmp_path, monkeypatch):
 
     @provider.post('/v1/billing_portal/sessions')
     def portal():
-        state['portals'].append(request.form.to_dict())
+        state['portals'].append(flask_request.form.to_dict())
         return jsonify(id='bps_synthetic', object='billing_portal.session', url='https://billing.stripe.com/synthetic')
 
     @provider.get('/v1/checkout/sessions/<checkout_id>')
@@ -140,6 +147,7 @@ def hosted_app(tmp_path, monkeypatch):
     app = module.app
     app.testing = True
     host = app.extensions['bod_hosted']
+    assert host.oauth._server_metadata_url == issuer.rstrip('/') + '/.well-known/openid-configuration'
     host.oauth._server_metadata_url = base + '/.well-known/openid-configuration'
     import stripe
     host.stripe = stripe.StripeClient('sk_test_synthetic', base_addresses={'api': base},
@@ -273,6 +281,9 @@ def test_two_families_all_existing_routes_are_isolated(hosted_app):
 
 @pytest.mark.parametrize('claims', [
     {'iss': 'https://attacker.example/'}, {'aud': 'other'}, {'nonce': 'wrong'},
+    {'iss': 'https://accounts.google.com/'}, {'iss': 'http://accounts.google.com'},
+    {'iss': 'https://accounts.google.com.attacker.test'},
+    {'aud': None}, {'nonce': None}, {'nonce': 'wrong', 'nonce_supported': False},
     {'exp': 1}, {'iat': 1}, {'iat': 9999999999}, {'azp': 'wrong'}, {'sub': ''},
 ])
 def test_oidc_claim_rejection(hosted_app, claims):
@@ -283,6 +294,61 @@ def test_oidc_claim_rejection(hosted_app, claims):
     assert call(client, '/api/state', origin).status_code == 401
     with host.connect() as conn:
         assert conn.execute('SELECT count(*) FROM families').fetchone()[0] == 0
+
+
+def test_google_issuer_alias_and_changed_profile_keep_same_family(hosted_app):
+    app, host, state, origin = hosted_app
+    client = app.test_client()
+    state['claims'] = {'email': 'first@example.test', 'name': 'Private Parent',
+                       'picture': 'https://example.test/private-photo'}
+    assert login(client, state, origin).status_code == 302
+    with host.connect() as conn:
+        family = dict(conn.execute('SELECT * FROM families').fetchone())
+    state['claims'] = {'iss': 'accounts.google.com', 'email': 'changed@example.test',
+                       'name': 'Changed Parent'}
+    assert login(client, state, origin).status_code == 302
+    with host.connect() as conn:
+        assert [dict(row) for row in conn.execute('SELECT * FROM families')] == [family]
+    assert family['issuer'] == 'https://accounts.google.com'
+    with client.session_transaction(base_url=origin) as current:
+        assert set(current) == {'_permanent', 'family', 'csrf'}
+    # No directory, bank or server-side session retains profile claims/tokens.
+    from pathlib import Path
+    for path in (host.directory, host.root / 'sessions.sqlite', Path(host.family_path(family['id']))):
+        data = path.read_bytes()
+        for private in (b'first@example.test', b'changed@example.test', b'Private Parent',
+                        b'Changed Parent', b'private-photo', b'synthetic-access-token'):
+            assert private not in data
+
+
+def test_google_authorization_scope_and_openid_only_rejection(hosted_app):
+    app, host, state, origin = hosted_app
+    client = app.test_client()
+    start = call(client, '/auth/login', origin)
+    params = parse_qs(urlsplit(start.location).query)
+    assert params['scope'] == ['openid profile']
+    assert params['redirect_uri'] == [origin + '/auth/callback']
+    assert params['response_type'] == ['code']
+    assert 'access_type' not in params  # No offline token requested.
+    assert params['nonce'] and params['state']
+    params['scope'] = ['openid']
+    rejected = requests.get(urlsplit(start.location)._replace(query=urlencode(params, doseq=True)).geturl(),
+                            allow_redirects=False, timeout=3)
+    assert rejected.status_code == 400
+    assert rejected.json() == {'error': 'invalid_scope'}
+    assert state['token_calls'] == 0
+
+
+@pytest.mark.parametrize('hosted_app', ['https://identity.example.test/'], indirect=True)
+def test_existing_oidc_configuration_remains_strict(hosted_app):
+    app, host, state, origin = hosted_app
+    client = app.test_client()
+    assert login(client, state, origin).status_code == 302
+    assert host.issuer == 'https://identity.example.test/'
+    state['claims'] = {'iss': 'accounts.google.com'}
+    assert login(client, state, origin).status_code == 400
+    with host.connect() as conn:
+        assert conn.execute('SELECT count(*) FROM families').fetchone()[0] == 1
 
 
 def test_callback_browser_binding_state_replay_and_expiry(hosted_app):

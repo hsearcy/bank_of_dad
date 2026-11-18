@@ -8,17 +8,40 @@ hosted mode at an existing local bank database. It creates separate files under
 
 ## Smallest setup
 
-Use **Auth0 Universal Login** as the managed parent login/recovery service (or a
-conformant confidential OIDC provider using RS256, discovery and code + PKCE).
-The application does not implement passwords, collect parent profile information,
-or link identities by email. A different issuer/subject is a different family.
-Auth0 is a recommended operator choice, not an account provisioned by this change;
-review its current pricing/terms before choosing it.
+Use **direct Google sign-in** for the initial release; no Auth0 account, broker,
+or password system is needed. Every hosted parent needs a **Google account**
+(not necessarily a Gmail address); parents without one cannot use this hosted
+login. Google handles account sign-in/recovery. The app requests `openid profile`,
+the minimum one additional scope Google's OIDC documentation requires beyond
+`openid`; it does not request `email`, offline access, or other Google API scopes.
+Google may return profile claims, but the app discards them and retains only the
+verified stable issuer/subject identity. It never links accounts by email.
 
-1. Register a Regular Web Application at the identity provider. Allow the exact
-   callback `https://YOUR-HOST/auth/callback`, enable Authorization Code and RS256.
-   Use provider-hosted signup/recovery; configure the provider's desired login and
-   abuse protections. Only the `openid` scope is requested.
+1. In [Google Cloud Console](https://console.cloud.google.com/), select/create a
+   project, then open **Google Auth platform**:
+   - **Branding → Get Started** (if not configured): enter the app name, user
+     support email and developer contact email; choose **External** audience for
+     consumer Google accounts, review Google's policies, and create the setup.
+     Complete Branding with the public homepage, privacy-policy/terms URLs and
+     authorized domain you control as required for the intended launch. Do not
+     choose Internal unless deliberately limiting access to your Workspace org.
+   - **Audience**: start in **Testing**, and add your intended Google test accounts
+     under **Test users** if shown. Google exempts basic sign-in-only scopes such
+     as these from the usual test-user allowlist and seven-day authorization
+     expiry rules: **Testing is not a private-access gate for this app**. Workspace
+     policy or other account restrictions can still block sign-in. See Google's
+     [audience rules](https://support.google.com/cloud/answer/15549945).
+   - **Data Access → Add or remove scopes**: select only `openid` and
+     `https://www.googleapis.com/auth/userinfo.profile` (the Console equivalent
+     of the requested `profile` scope). Do not add email or other API scopes.
+   - **Clients → Create client → Web application**: name it, add the exact
+     **Authorized redirect URI** `https://YOUR-HOST/auth/callback`, and create.
+     Match scheme, hostname, port and path exactly; no trailing slash or wildcard.
+     Leave **Authorized JavaScript origins** empty: this is a server-side code
+     flow, not a JavaScript sign-in SDK. No People API is needed.
+   - Copy that web client's **Client ID** and **Client secret** into the private
+     service variables below. Use a separate client/project for staging if needed;
+     the application requires HTTPS even for a local hosted-mode rehearsal.
 2. In a **Stripe sandbox/test account first**, create a product with one active,
    recurring USD **999 cents / year**, quantity one, Price. Configure the Stripe
    customer portal to allow payment-method updates and cancellation at period end,
@@ -42,9 +65,8 @@ review its current pricing/terms before choosing it.
    BOD_PUBLIC_ORIGIN=https://YOUR-HOST
    BOD_HOSTED_DATA=/absolute/private/persistent/bank-of-dad-hosted
    BOD_SESSION_SECRET=<random value of at least 32 characters>
-   BOD_OIDC_ISSUER=https://YOUR-TENANT.auth0.com/
-   BOD_OIDC_CLIENT_ID=<registered client ID>
-   BOD_OIDC_CLIENT_SECRET=<registered client secret>
+   BOD_OIDC_CLIENT_ID=<Google web client ID, usually ending in .apps.googleusercontent.com>
+   BOD_OIDC_CLIENT_SECRET=<Google web client secret>
    BOD_STRIPE_SECRET_KEY=<sandbox secret API key>
    BOD_STRIPE_PRICE_ID=<sandbox annual price ID>
    BOD_STRIPE_WEBHOOK_SECRET=<endpoint signing secret>
@@ -70,7 +92,22 @@ review its current pricing/terms before choosing it.
    family bank, open Dad controls, and add children using nicknames if desired.
    Manage payment methods and cancel in the Stripe-hosted portal.
 
-Do not switch to live mode until a real provider/browser login and a real Stripe
+Google's issuer defaults to `https://accounts.google.com`; no issuer variable is
+needed. The existing `BOD_OIDC_*` names are intentionally retained, not an Auth0
+dependency. For an already-configured conformant confidential OIDC provider,
+setting `BOD_OIDC_ISSUER` explicitly preserves discovery, RS256, code + PKCE and
+the existing `openid`-only request. This is a compatibility option, not another
+required service. **Do not change an existing family's issuer to Google and expect
+automatic linking**: a different issuer/subject is a different family. Back up and
+plan an explicit identity migration instead; matching emails never transfers data.
+
+Before a public launch, move the Google project's **Audience → Publishing status**
+to **In production** and satisfy any branding/domain verification and policy
+requirements Google displays. Basic sign-in scopes do not by themselves require
+sensitive/restricted-scope verification, but a successful Testing login is not
+production approval or a production security review.
+
+Do not switch Stripe to live mode until a real Google/browser login and a real Stripe
 sandbox purchase, renewal/failure and cancellation have been verified for the
 actual deployment. None were performed as part of this local implementation.
 Changing the configured issuer, client, Price or Stripe account is not a migration
@@ -80,7 +117,12 @@ procedure. Keep credentials/mode consistent and plan any account migration.
 
 - Authlib performs code exchange, PKCE, nonce and signed ID-token validation.
   Browser-bound state is consumed atomically in SQLite before exchange. Identity
-  is the exact `(issuer, subject)`, never an email or request body family ID.
+  is the verified `(issuer, subject)`, never an email or request body family ID.
+  Google accepts only its documented signed-token issuers
+  `https://accounts.google.com` and `accounts.google.com`; both are stored as
+  `https://accounts.google.com` for the same stable subject. Other configured
+  issuers must match exactly. Authlib checks audience, nonce, expiry and signature;
+  the app also checks authorized party and recent issuance.
 - Flask-Session keeps opaque, Secure/HttpOnly/SameSite=Lax cookies backed by
   server-side SQLite sessions. Login rotates the session ID; local sign-out deletes
   the server session. Sessions expire after seven days. Local sign-out does **not**
@@ -143,9 +185,13 @@ fingerprints, browser sessions and short-lived
 login state, plus the actual family bank data: children’s display names/emojis,
 balances, allowances/rates, investments, spending/gift notes and history. Stripe
 collects payment/billing details in hosted pages; the app neither requests nor
-stores card details, billing addresses, parent email/profile, dates of birth or
-child email addresses. The identity provider may collect parent email and recovery
-information. Infrastructure can retain access logs/IP addresses; configure logging
+stores card details, billing addresses, dates of birth or child email addresses.
+Google's required additional `profile` scope may return parent name/picture claims;
+these are transiently received during validation, not persisted in the directory,
+family database or app session. Parent email is not requested or stored. Access
+and ID tokens are discarded after callback validation, not retained for API use.
+The identity provider may collect parent email and recovery information.
+Infrastructure can retain access logs/IP addresses; configure logging
 and retention intentionally, avoid callback query-string logging, and do not enable
 Authlib/Stripe debug logging with real credentials or people.
 
@@ -173,7 +219,9 @@ BANK_OF_DAD_BROWSER_TESTS=1 BOD_TEST_CHROMIUM=/usr/bin/chromium python -m unitte
 ```
 
 Hosted tests use synthetic identities and balances, real Authlib/JWKS/PKCE HTTP
-requests to a disposable local issuer, the real Stripe SDK against a local HTTP
+requests to a disposable local fixture with Google's required `openid profile`
+scope and documented issuer claims (plus a generic OIDC compatibility regression),
+the real Stripe SDK against a local HTTP
 fixture, and SDK-signed webhook inputs. The real network tests connect two devices
 in family A and an independent family B, assert post-commit A-only notifications,
 reconnect resync, anonymous/unpaid/origin denial, and open-socket logout/session/
@@ -189,6 +237,7 @@ Do not mistake those fixtures for provider acceptance, a production security rev
 or a verified deployment/proxy configuration.
 
 References: [Authlib Flask OIDC](https://docs.authlib.org/en/latest/oauth2/client/web/flask.html),
-[Auth0 web app setup](https://auth0.com/docs/quickstart/webapp/python),
+[Google OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect),
+[Google OAuth production readiness](https://developers.google.com/identity/protocols/oauth2/production-readiness/policy-compliance),
 [Stripe subscription webhooks](https://docs.stripe.com/billing/subscriptions/webhooks),
 [Stripe customer portal](https://docs.stripe.com/customer-management/integrate-customer-portal).

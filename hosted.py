@@ -34,7 +34,12 @@ class Hosted:
         self.app = app
         self.stripe_module = stripe
         self.origin = os.environ['BOD_PUBLIC_ORIGIN'].rstrip('/')
-        self.issuer = os.environ['BOD_OIDC_ISSUER']
+        self.issuer = os.environ.get('BOD_OIDC_ISSUER', 'https://accounts.google.com')
+        # Google documents both spellings in signed ID tokens. Validate against
+        # this fixed allowlist, then store the canonical issuer so one Google
+        # subject cannot accidentally acquire two families. Other issuers remain exact.
+        google = self.issuer == 'https://accounts.google.com'
+        self.valid_issuers = [self.issuer, 'accounts.google.com'] if google else [self.issuer]
         for url in (self.origin, self.issuer):
             parsed = urlsplit(url)
             if parsed.scheme != 'https' or not parsed.netloc or parsed.query or parsed.fragment:
@@ -67,7 +72,10 @@ class Hosted:
             'parent', client_id=os.environ['BOD_OIDC_CLIENT_ID'],
             client_secret=os.environ['BOD_OIDC_CLIENT_SECRET'],
             server_metadata_url=self.issuer.rstrip('/') + '/.well-known/openid-configuration',
-            client_kwargs={'scope': 'openid', 'code_challenge_method': 'S256', 'default_timeout': 15},
+            # Google requires openid plus profile or email. Do not request email,
+            # offline access or other APIs; profile claims are discarded after validation.
+            client_kwargs={'scope': 'openid profile' if google else 'openid',
+                           'code_challenge_method': 'S256', 'default_timeout': 15},
             id_token_signing_alg_values_supported=['RS256'],
         )
         self.stripe = stripe.StripeClient(
@@ -213,12 +221,12 @@ class Hosted:
                 return 'Sign-in failed. Please try again.', 400
         try:
             token = self.oauth.authorize_access_token(
-                claims_options={'iss': {'essential': True, 'value': self.issuer},
+                claims_options={'iss': {'essential': True, 'values': self.valid_issuers},
                                 'sub': {'essential': True}, 'iat': {'essential': True},
                                 'exp': {'essential': True}}, leeway=30)
             claims = token['userinfo']
             now = time.time()
-            if (claims['iss'] != self.issuer or not isinstance(claims['sub'], str) or not claims['sub']
+            if (claims['iss'] not in self.valid_issuers or not isinstance(claims['sub'], str) or not claims['sub']
                     or claims.get('azp', os.environ['BOD_OIDC_CLIENT_ID']) != os.environ['BOD_OIDC_CLIENT_ID']
                     or not now - 600 <= claims['iat'] <= now + 30):
                 raise ValueError('Invalid identity claims')

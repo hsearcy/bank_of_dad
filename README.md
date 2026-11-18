@@ -76,10 +76,11 @@ are carried in notifications. See [HOSTED.md](HOSTED.md) for operational limits.
 
 ## Optional hosted families and subscriptions
 
-An opt-in hosted mode adds managed OIDC parent sign-in, server-owned families,
+An opt-in hosted mode adds direct Google parent sign-in, server-owned families,
 separate SQLite bank storage per family, and Stripe-hosted Checkout/customer portal
 for **$9.99 USD/year per family**. Self-hosting stays free and needs no Stripe or
-identity-provider dependencies or credentials. See [HOSTED.md](HOSTED.md) for setup,
+identity-provider dependencies or credentials. Hosted parents need a Google account;
+no Auth0 service is required. See [HOSTED.md](HOSTED.md) for setup,
 retained data, verification and explicit limits. Hosted mode is not enabled by
 `run.sh` and has not been deployed or verified against real provider accounts.
 
