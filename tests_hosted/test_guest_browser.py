@@ -97,7 +97,8 @@ def test_dashboard_edit_reload_signup_all_data_sync_and_collision(browser_bank, 
     page.locator('.gift-amt').first.fill('2')
     page.locator('.gift-note').first.fill('Trial gift')
     page.locator('.gift-btn').first.click()
-    api.expect(mirror.locator('#kids .big').first).to_have_text('$8.00')
+    # Saving capitalizes the sample's genuinely accrued cent of interest.
+    api.expect(mirror.locator('#kids .big').first).to_have_text('$8.01')
     mirror.close()
     before = snapshot(host, family['id'])
     capture(page, 'dad', width)

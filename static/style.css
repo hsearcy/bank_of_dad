@@ -423,6 +423,27 @@ html, body {
 .bank-choice .account-button + .account-button { margin-top: 12px; }
 @media (max-width: 680px) { .bank-choice { margin: 16px; } .guest-welcome { padding: 18px; } }
 
+/* Optional device helpers and nonmodal product tour ------------------------*/
+.device-controls { border: 1px solid #e6deee; border-radius: 16px; padding: 12px 14px; margin: 14px 0; background: #faf7ff; }
+.device-controls h3 { margin: 0 0 8px; }
+.awake-toggle { display: flex; align-items: center; gap: 10px; min-height: 44px; cursor: pointer; }
+.awake-toggle input { width: 22px; height: 22px; accent-color: #7544af; flex: none; }
+#awakeStatus { font-size: 13px; line-height: 1.5; margin: 4px 0; }
+body { padding-bottom: var(--tour-space, 0px); }
+.product-tour { position: fixed; z-index: 45; bottom: 12px; left: 50%; transform: translateX(-50%); width: min(540px, calc(100% - 24px)); padding: 16px 18px; background: #fff; color: var(--ink); border: 2px solid #d4b9f5; border-radius: 20px; box-shadow: 0 6px 28px #43305a22; }
+.product-tour[hidden] { display: none; }
+.product-tour h2 { font-size: 18px; line-height: 1.3; margin: 0 0 6px; }
+.product-tour h2:focus { outline: none; }
+.product-tour p { font-size: 14px; line-height: 1.5; margin: 0 0 8px; }
+.tour-actions { display: flex; justify-content: space-between; gap: 12px; }
+.tour-actions button { min-height: 44px; padding: 8px 14px; border: 0; border-radius: 12px; font: inherit; font-size: 14px; cursor: pointer; color: #654099; background: #f3ecfb; }
+#tourNext { background: #7544af; color: white; }
+.tour-target { outline: 4px solid #7544af !important; outline-offset: 4px; }
+.product-tour button:focus-visible, #keepAwake:focus-visible { outline: 3px solid #7544af; outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) {
+  .tour-target { animation: none !important; transition: none !important; }
+}
+
 /* Confetti ----------------------------------------------------------------*/
 .confetti-layer { position: fixed; inset: 0; pointer-events: none; z-index: 100; overflow: hidden; }
 .confetti-bit { position: absolute; font-size: 30px; will-change: transform, opacity; }

@@ -541,6 +541,7 @@ function render() {
   } : null;
   for (const k of STATE.kids) wrap.appendChild(kidCard(k));
   wireChartTips(wrap);
+  BodExperience.rendered();
 }
 
 function kidCard(k) {
@@ -1408,19 +1409,24 @@ if ("serviceWorker" in navigator && window.isSecureContext) {
 }
 
 wireGlobal();
+BodExperience.init();
 startLiveUpdates();
 (async () => {
   await refresh();
   await ensurePinSetup();      // force a Dad PIN on first launch
   const welcome = document.querySelector('#guestWelcome');
   if (welcome) {
-    const dismiss = async () => {
+    document.querySelector('#sampleInterestNote').hidden = !(STATE.kids[0]?.pending_interest_cents > 0);
+    const dismiss = async (offerTour = false) => {
       const response = await fetch('/auth/welcome', {method: 'POST', headers: {
         'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content
       }});
-      if (response.ok) welcome.close();
+      if (response.ok) {
+        welcome.close();
+        if (offerTour) BodExperience.offer();
+      }
     };
-    document.querySelector('#tryGuestBank').onclick = () => dismiss().catch(() => {});
+    document.querySelector('#tryGuestBank').onclick = () => dismiss(true).catch(() => {});
     welcome.addEventListener('cancel', event => { event.preventDefault(); dismiss().catch(() => {}); });
     welcome.showModal();
   }

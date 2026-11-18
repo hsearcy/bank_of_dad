@@ -26,6 +26,13 @@
   <div id="dadPanel" class="panel hidden">
     <div class="panel-card">
       <h2>👨‍👧 Dad Controls</h2>
+      <section class="device-controls" aria-labelledby="deviceTitle">
+        <h3 id="deviceTitle">This screen</h3>
+        <label class="awake-toggle"><input id="keepAwake" type="checkbox" role="switch" aria-describedby="awakeHelp awakeStatus"> Keep screen awake</label>
+        <p id="awakeStatus" role="status">Off</p>
+        <p id="awakeHelp" class="account-note">Optional for a shared tablet; off again after a reload. Works only while this page is visible, on supported browsers over HTTPS (or localhost). Your device may still put the display to sleep; this cannot keep a locked screen awake.</p>
+        <button id="replayTour" class="account-text-button" type="button">Show the quick tour</button>
+      </section>
       {% if hosted_account is defined %}
       <details class="dad-account" aria-label="Family subscription">
         <summary>{% if hosted_guest %}Save / sync, subscription &amp; sign out{% else %}Subscription &amp; sign out{% endif %}
@@ -76,16 +83,27 @@
   <dialog id="guestWelcome" class="guest-welcome" aria-labelledby="guestWelcomeTitle">
     <span class="welcome-icon" aria-hidden="true">🌱</span>
     <h2 id="guestWelcomeTitle">Welcome to Bank of Dad</h2>
-    <p>A little family bank for practicing spending, saving and investing — not a real bank. Sample Kid has $5 to spend, $1 saved and $1 invested. Try the controls, or make it your own in Dad.</p>
+    <p>A little family bank for practicing spending, saving and investing — not a real bank. Sample Kid has $5 to spend, $1 saved and $1 invested. <span id="sampleInterestNote" hidden>There’s a little savings interest ready to collect, too. </span>Try the controls, or make it your own in Dad.</p>
+    <p>I built this to help my kids learn the basics of money, the value of saving, and the power of compounding when they start young. I hope it helps your family too.</p>
     <p><strong>Try it for a week on this device. No sign-up or card needed.</strong> Changes are saved in this browser’s bank.</p>
     <p class="guest-warning">Without an account, clearing browser data or switching devices can lose access to your bank and progress. Save / sync with an account any time in Dad, keeping everything you’ve done.</p>
-    <p>After 7 days, subscribe or ask for free access. No automatic charge. The $9.99/year price just helps cover the server.</p>
+    <p>The free trial lasts 7 days. No automatic charge. If you’re enjoying the bank and want to help me keep the lights on, you can subscribe for $9.99/year. If that’s too much, {% if support_url %}<a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">please get in touch about free access</a> and I’ll see what we can do{% else %}please ask the person running this bank about free access — a contact link hasn’t been set up yet{% endif %}.</p>
+    <p class="account-note">An old tablet left on for checking progress and collecting interest is handy, but not required — a phone or computer works too.</p>
     <button id="tryGuestBank" class="account-button account-primary" autofocus>Let’s try it</button>
     <a href="/auth/login" class="welcome-signup">Save / sync this bank now (optional)</a>
     <p class="account-note">Prefer your own server? <a href="https://github.com/hsearcy/bank_of_dad" target="_blank" rel="noopener noreferrer">Self-host for free ↗</a></p>
   </dialog>
   {% endif %}
 
+  <aside id="productTour" class="product-tour" aria-label="Quick product tour" hidden>
+    <h2 id="tourTitle" tabindex="-1" aria-live="polite"></h2>
+    <p id="tourText"></p>
+    <div class="tour-actions">
+      <button id="tourSkip" type="button">Skip tour</button>
+      <button id="tourNext" type="button">Show me around</button>
+    </div>
+  </aside>
+  <script src="/static/experience.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>
