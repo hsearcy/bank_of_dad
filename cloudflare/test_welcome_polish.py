@@ -16,6 +16,9 @@ def test_short_welcome_preserves_trial_sample_and_skip(runtime, width):
         expect(welcome).to_be_visible()
         expect(page.locator('#guestWelcomeTitle')).to_be_focused()
         text = welcome.inner_text()
+        reminder = welcome.locator('p').first
+        expect(reminder).to_contain_text("This isn't a real bank")
+        assert reminder.evaluate('(el) => { const r = el.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; }')
         for removed in ('Sample Kid has', 'Try the controls', 'The free trial lasts 31 days. No automatic charge.'):
             assert removed not in text
         for retained in ('my kids', '31 days', 'No sign-up or card needed.', 'clearing browser data', 'free access', 'tablet', 'Self-host for free'):
