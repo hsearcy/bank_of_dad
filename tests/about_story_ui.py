@@ -17,10 +17,21 @@ def check_about_story(page, width):
     text = dialog.inner_text()
     for phrase in ('not a real bank', 'I use it to track money I owe my kids',
                    '$1 per year of age every 14 days', 'don’t tie allowance to chores',
-                   'not a rule for your family', 'another stuffed animal', 'early elementary',
+                   'worked well for our family', 'another stuffed animal', 'early elementary',
                    '100% increase doubles the amount', '$1 becomes $2, then $4, then $8',
                    'not returns to expect from a real investment'):
         assert phrase in text
+    paragraphs = page.locator('#aboutDialog section p').all_text_contents()
+    assert len(paragraphs) == 4
+    assert paragraphs[0] == ('We started giving our kids an allowance because I got tired of saying no '
+                             'to another stuffed animal every time we went to the store. Now they can '
+                             'decide whether to buy it themselves or save for something else.')
+    assert paragraphs[1] == ('I give my kids $1 per year of age every 14 days, so they get a little raise '
+                             'each birthday. We don’t tie allowance to chores, and this has worked well '
+                             'for our family.')
+    assert text.index('I built Bank of Dad') < text.index('How I use it') < text.index(paragraphs[0])
+    assert 'ongoing behavior problems' not in text
+    assert 'not a rule' not in text
     page.locator('#howIUseIt').scroll_into_view_if_needed()
     expect(page.locator('#howIUseIt')).to_be_in_viewport()
     page.keyboard.press('Escape')
