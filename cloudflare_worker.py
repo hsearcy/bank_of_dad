@@ -364,8 +364,8 @@ class Default(WorkerEntrypoint):
         if status := ingress_status(self.env, request):
             return denied(status)
         path = urlsplit(request.url).path
-        if path.startswith('/static/') or path == '/sw.js':
-            asset = '/hosted-sw.js' if path == '/sw.js' else path[len('/static'):]
+        if path.startswith('/static/') or path in ('/sw.js', '/robots.txt'):
+            asset = '/hosted-sw.js' if path == '/sw.js' else ('/robots.txt' if path == '/robots.txt' else path[len('/static'):])
             url = str(self.env.BOD_PUBLIC_ORIGIN) + asset
             response = await self.env.ASSETS.fetch(js.Request.new(url, method=str(request.method)))
             return response
