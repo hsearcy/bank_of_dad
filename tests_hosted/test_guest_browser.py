@@ -1,4 +1,9 @@
 """Real frontend and WSS, real OIDC callback, disposable providers and banks."""
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / 'tests'))
+from parent_pin_ui import open_parent
+
 import os
 from pathlib import Path
 import threading
@@ -72,7 +77,7 @@ def test_dashboard_edit_reload_signup_all_data_sync_and_collision(browser_bank, 
     capture(page, 'welcome', width)
     page.locator('#tryGuestBank').click()
     api.expect(page.locator('#guestWelcome')).not_to_be_visible()
-    page.locator('.btn-spend').click()
+    page.locator('.wallet .btn-spend').click()
     page.locator('.spend-reason').fill('A real trial snack')
     page.locator('.spend-amt').fill('1')
     page.locator('#modalCard .modal-go').click()
@@ -81,7 +86,7 @@ def test_dashboard_edit_reload_signup_all_data_sync_and_collision(browser_bank, 
     page.locator('.custom-amt').fill('1')
     page.locator('[data-act="save"]').click()
     api.expect(page.locator('#modal')).to_have_class('panel hidden')
-    page.locator('#dadBtn').click()
+    open_parent(page)
     page.locator('#newKidName').fill('My real kid')
     page.locator('#addKidBtn').click()
     api.expect(page.locator('.dk-head').last).to_contain_text('My real kid')
@@ -93,7 +98,7 @@ def test_dashboard_edit_reload_signup_all_data_sync_and_collision(browser_bank, 
     mirror = ctx.new_page()
     mirror.goto(origin + '/')
     mirror.wait_for_function('window.__sockets.some(ws => ws.readyState === 1)')
-    page.locator('#dadBtn').click()
+    open_parent(page)
     page.locator('.gift-amt').first.fill('2')
     page.locator('.gift-note').first.fill('Trial gift')
     page.locator('.gift-btn').first.click()
@@ -126,7 +131,7 @@ def test_dashboard_edit_reload_signup_all_data_sync_and_collision(browser_bank, 
     capture(other, 'collision', width)
     other.get_by_role('button', name='Open my existing family bank').click()
     api.expect(other.locator('#kids .name').last).to_have_text('My real kid')
-    other.locator('#dadBtn').click()
+    open_parent(other)
     other.locator('.dad-account summary').click()
     other.get_by_role('button', name='Return to this device’s trial').click()
     api.expect(other.locator('#guestWelcome')).to_be_visible()
@@ -151,7 +156,7 @@ def test_signup_delayed_auth_start_keeps_guest_socket_refresh_and_exact_bank(bro
     page = ctx.new_page()
     page.goto(origin + '/')
     page.locator('#tryGuestBank').click()
-    page.locator('#dadBtn').click()
+    open_parent(page)
     page.locator('#newKidName').fill('Keep my edited bank')
     page.locator('#addKidBtn').click()
     api.expect(page.locator('.dk-head').last).to_contain_text('Keep my edited bank')
@@ -184,7 +189,7 @@ def test_signup_delayed_auth_start_keeps_guest_socket_refresh_and_exact_bank(bro
         assert ctx.request.get(origin + '/api/state').status == 200
         frames = mirror.evaluate('window.__frames.length')
         gift = ctx.request.post(origin + '/api/admin/gift',
-                                headers={'X-CSRF-Token': mirror.locator('meta[name="csrf-token"]').get_attribute('content')},
+                                headers={'X-Dad-Pin': '1234', 'X-CSRF-Token': mirror.locator('meta[name="csrf-token"]').get_attribute('content')},
                                 data={'kid_id': 1, 'amount_cents': 100, 'note': 'During signup'})
         assert gift.ok and gift.json()['ok']
         mirror.wait_for_function('window.__frames.length > ' + str(frames))

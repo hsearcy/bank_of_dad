@@ -15,6 +15,13 @@ identities or family data are included. See the [publication notes](cloudflare/P
 for the original hosted snapshot's setup and verification boundaries. Source
 publication does not deploy these changes. Free self-hosting remains independent.
 
+The dashboard update adds a customizable parent label, first-use parent PIN setup,
+clear spendable Wallet versus Total balances, and a tour that stays open through
+real actions. [Automatic savings interest](docs/automatic-interest.md) is optional
+and **off by default**: enabling it claims pending interest immediately, then once
+per configured savings period. See [parent controls](docs/parent-controls.md) and
+[exact savings arithmetic and downgrade limits](docs/savings-arithmetic.md).
+
 ## Screenshots
 
 These screenshots show fictional names and sample balances in a disposable database. A fresh self-hosted install starts empty; hosted device trials start with Sample Kid.
@@ -35,7 +42,7 @@ Requires Python 3 and `venv`. From this directory:
 ./run.sh
 ```
 
-The script creates a local virtual environment, installs the requirements (including Flask-Sock for WebSockets), and starts the app. Open **http://127.0.0.1:5001** on the same machine. On first visit, set a 4–8 digit Dad PIN, open **Dad**, and add a kid by name and emoji. A fresh database starts empty; no example family or transaction history is included. Newly added kids receive the starting wallet amount configured in `config.py`.
+The script creates a local virtual environment, installs the requirements (including Flask-Sock for WebSockets), and starts the app. Open **http://127.0.0.1:5001** on the same machine. Open **Dad** to set and confirm a 4–8 digit parent PIN, then add a kid by name and emoji. You can change the parent label in those controls. A fresh database starts empty; no example family or transaction history is included. Newly added kids receive the starting wallet amount configured in `config.py`.
 
 Use Dad controls to adjust allowances and rates, give money, edit transactions, or advance the clock for demonstrations. Each child also has **Rename** and **Remove…** controls (including the hosted Sample Kid). Rename preserves their money and history. Remove asks for confirmation before permanently deleting that child’s balances, rewards, investments and history; it does not affect other children or move money. See [kid management safety and verification](docs/kid-management.md). Kids can collect rewards, save, withdraw, invest, and record spending. Changes persist in SQLite. This is an educational simulation; rates and balances are not financial advice or actual accounts.
 
@@ -107,7 +114,7 @@ local fixture tests do not establish real-provider acceptance for your installat
 
 ## Self-hosted security limitations
 
-**Localhost is the safe default. Do not expose self-hosted mode to the public internet or an untrusted network.** The built-in Flask server is for local use, not a production deployment. The PIN is a child deterrent, not secure authentication: it has a small search space, no rate limiting, and is sent in requests without encryption over HTTP. Before the first PIN is set, administrative API access is not protected; set it immediately on a trusted machine. The kid-facing API is intentionally unauthenticated, and anyone with access can view or modify some data. Network access requires your own strong authentication, transport encryption, network isolation, and security review. Self-hosted mode has no payment integration; neither mode connects to a real bank.
+**Localhost is the safe default. Do not expose self-hosted mode to the public internet or an untrusted network.** The built-in Flask server is for local use, not a production deployment. The PIN is a child deterrent, not secure authentication: it has a small search space and is sent in requests without encryption over HTTP. Parent operations require PIN setup and verification; failed attempts are throttled, but initial setup must still happen on a trusted machine. The kid-facing API is intentionally unauthenticated, and anyone with access can view or modify some data. Network access requires your own strong authentication, transport encryption, network isolation, and security review. Self-hosted mode has no payment integration; neither mode connects to a real bank.
 
 ## Tests
 

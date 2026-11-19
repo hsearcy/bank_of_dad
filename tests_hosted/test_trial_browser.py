@@ -1,4 +1,9 @@
 """Real onboarding/Dad modal/expired UI; synthetic providers, never real payments."""
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / 'tests'))
+from parent_pin_ui import open_parent
+
 import os
 from pathlib import Path
 import threading
@@ -44,7 +49,7 @@ def test_no_card_onboarding_dad_access_expiry_and_restore(hosted_app, width):
             assert page.url == origin + '/'
             assert state['customers'] == state['checkouts'] == []
             assert page.locator('.topbar a').count() == 0
-            page.locator('#dadBtn').click()
+            open_parent(page)
             sync_api.expect(page.locator('.dad-account summary')).to_contain_text('Free trial · 31d left')
             assert not page.locator('.dad-account').evaluate('(el) => el.open')
             page.locator('#newKidName').fill('Trial Nickname')
@@ -79,7 +84,7 @@ def test_no_card_onboarding_dad_access_expiry_and_restore(hosted_app, width):
             page.get_by_role('link', name='Open your family bank').click()
             sync_api.expect(page.locator('#kids .name')).to_have_text('Trial Nickname')
             sync_api.expect(page.locator('#kids .big')).to_have_text('$5.00')
-            page.locator('#dadBtn').click()
+            open_parent(page)
             page.locator('.dad-account summary').click()
             sync_api.expect(page.locator('.access-badge')).to_contain_text('Free access')
             assert page.get_by_role('button', name='Subscribe with Stripe').count() == 0

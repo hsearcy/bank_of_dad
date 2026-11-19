@@ -1,4 +1,9 @@
 """Editable terms in actual workerd/DO SQLite and the real phone UI; no providers."""
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / 'tests'))
+from parent_pin_ui import open_parent
+
 import sqlite3
 import time
 
@@ -13,8 +18,8 @@ def bank_rows(path):
 
 
 def test_legacy_migration_noop_validation_financial_invariants_and_rollback(runtime):
-    cookie, csrf = runtime.guest()
-    other, _ = runtime.guest()
+    cookie, csrf = runtime.parent_guest()
+    other, _ = runtime.parent_guest()
     untouched = state(runtime, other)
     runtime.stop()
     path = runtime.database(cookie)
@@ -33,19 +38,19 @@ def test_legacy_migration_noop_validation_financial_invariants_and_rollback(runt
     no_op = dict(savings_weekly_pct=cfg['savings_weekly_pct'], savings_period_days=cfg['savings_period_days'],
                  returns={b['key']: b['return_pct'] for b in cfg['bonds']},
                  bond_period_days={b['key']: b['days'] for b in cfg['bonds']})
-    assert runtime.call('/api/admin/rates', cookie=cookie, csrf=csrf, body=no_op)[1]['ok']
+    assert runtime.parent_call('/api/admin/rates', cookie=cookie, csrf=csrf, body=no_op)[1]['ok']
     assert bank_rows(path) == original
     for payload in ({'savings_period_days': 0}, {'savings_period_days': 3651},
                     {'bond_period_days': {'1mo': -1}}, {'bond_period_days': {'3mo': 1.5}},
                     {'savings_weekly_pct': -1}, {'returns': []}):
-        assert runtime.call('/api/admin/rates', cookie=cookie, csrf=csrf, body=payload)[0] == 400
+        assert runtime.parent_call('/api/admin/rates', cookie=cookie, csrf=csrf, body=payload)[0] == 400
         assert bank_rows(path) == original
     for kwargs in ({}, {'csrf': csrf, 'origin': 'https://foreign.invalid'}):
-        assert runtime.call('/api/admin/rates', cookie=cookie, body={'savings_period_days': 1}, **kwargs)[0] == 403
+        assert runtime.parent_call('/api/admin/rates', cookie=cookie, body={'savings_period_days': 1}, **kwargs)[0] == 403
         assert bank_rows(path) == original
     payload = dict(savings_weekly_pct=2.123456789, savings_period_days=2,
                    returns={'1mo': 50}, bond_period_days={'1mo': 3, '3mo': 3650})
-    assert runtime.call('/api/admin/rates', cookie=cookie, csrf=csrf, body=payload)[1]['ok']
+    assert runtime.parent_call('/api/admin/rates', cookie=cookie, csrf=csrf, body=payload)[1]['ok']
     after = state(runtime, cookie)
     for key in ('wallet_cents', 'savings_cents', 'owned_cents', 'pending_interest_cents'):
         assert after['kids'][0][key] == before['kids'][0][key]
@@ -69,20 +74,20 @@ def test_legacy_migration_noop_validation_financial_invariants_and_rollback(runt
         conn.execute("CREATE TRIGGER fail_period BEFORE INSERT ON settings BEGIN SELECT RAISE(ABORT, 'period rollback'); END")
     before_failure = snapshot(path)
     runtime.start()
-    assert runtime.call('/api/admin/rates', cookie=cookie, csrf=csrf, body={'savings_period_days': 1})[0] == 500
+    assert runtime.parent_call('/api/admin/rates', cookie=cookie, csrf=csrf, body={'savings_period_days': 1})[0] == 500
     runtime.stop()
     assert snapshot(path) == before_failure
     with sqlite3.connect(path) as conn:
         conn.execute('DROP TRIGGER fail_period')
     runtime.start()
     assert state(runtime, cookie)['config']['savings_period_days'] == 2
-    assert runtime.call('/api/admin/fastforward', cookie=cookie, csrf=csrf, body={'days': 3})[1]['ok']
+    assert runtime.parent_call('/api/admin/fastforward', cookie=cookie, csrf=csrf, body={'days': 3})[1]['ok']
     assert runtime.call('/api/collect', cookie=cookie, csrf=csrf, body={'kid_id': 1, 'kind': 'invest'})[1]['collected_cents'] == 50
     rows = bank_rows(path)['bonds']
     assert rows[0]['collected'] == 0 and rows[-1]['collected'] == 1
-    # Workers use the existing family capability, not a PIN; anonymous writes fail.
+    # A valid parent PIN cannot replace the required family capability.
     auth_before = bank_rows(path)
-    assert runtime.call('/api/admin/rates', csrf=csrf, body={'savings_period_days': 7})[0] == 401
+    assert runtime.parent_call('/api/admin/rates', csrf=csrf, body={'savings_period_days': 7})[0] == 401
     assert bank_rows(path) == auth_before
 
 
@@ -90,10 +95,10 @@ def test_carry_collection_and_transfers_after_rewind_do_not_reearn_time(runtime)
     # Exercise the unchanged domain code through real HTTP + transactionSync.
     # Fresh guests retain their original investment contracts throughout.
     for action in ('interest', 'all', 'save', 'withdraw'):
-        cookie, csrf = runtime.guest()
+        cookie, csrf = runtime.parent_guest()
 
         def post(path, **body):
-            code, result, _ = runtime.call(path, cookie=cookie, csrf=csrf, body=body)
+            code, result, _ = runtime.parent_call(path, cookie=cookie, csrf=csrf, body=body)
             assert code == 200 and result['ok'], result
             return result
 
@@ -151,7 +156,7 @@ def test_phone_rates_roundtrip_and_websocket_updates_without_polling(runtime):
             c.goto(runtime.origin)
             for page in (a, b, c):
                 page.wait_for_function('window.__sockets.some(s => s.readyState === 1)')
-            a.locator('#dadBtn').click()
+            open_parent(a)
             a.locator('.period-sav').fill('0')
             a.locator('#saveRates').click()
             assert not a.locator('.period-sav').evaluate('(i) => i.checkValidity()')
@@ -175,7 +180,7 @@ def test_phone_rates_roundtrip_and_websocket_updates_without_polling(runtime):
             # Old contract labels are from purchased duration, not the new offer.
             expect(b.locator('.bond-top').first).to_contain_text('1 Month lock')
             a.locator('#closeDad').click()
-            a.locator('#dadBtn').click()
+            open_parent(a)
             expect(a.locator('.period-sav')).to_have_value('2')
             expect(a.locator('.rate-sav')).to_have_value('3.123456789')
             expect(a.locator('.period-bond[data-key="1mo"]')).to_have_value('12')

@@ -55,12 +55,6 @@ class CloudflareGuest:
             if request.path.startswith('/api/'):
                 return jsonify(error='Subscription required', billing='/billing'), 402
             return redirect('/billing')
-        if request.endpoint == 'api_admin_status':
-            return jsonify(pin_set=False, hosted_parent=True)
-        if request.endpoint == 'api_admin_verify':
-            return jsonify(ok=True)
-        if request.endpoint == 'api_admin_set_pin':
-            return jsonify(ok=False, message='This device bank uses its browser token, not a PIN.'), 403
         if request.path.startswith('/api/') and request.method == 'POST':
             body = request.get_json(silent=True)
             if not isinstance(body, dict):

@@ -1,4 +1,9 @@
 """First-visit experience on disposable banks and real Chromium only."""
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / 'tests'))
+from parent_pin_ui import open_parent
+
 import sqlite3
 from pathlib import Path
 
@@ -82,7 +87,7 @@ def test_welcome_tour_real_targets_claim_reload_and_keyboard(browser_bank, width
     page.locator('#tryGuestBank').click()
     api.expect(page.locator('#productTour')).to_be_visible()
     page.get_by_role('button', name='Show me around').click()
-    for selector in ['#dadBtn', '.reward-btn[data-kind="interest"]', '.btn-save', '.btn-bond']:
+    for selector in ['#dadBtn', '.reward-btn[data-kind="interest"]', '.btn-save', '.btn-bond', '.wallet-actions']:
         target = page.locator(selector).first
         # Real polling/live reads rebuild the cards; highlights must follow them.
         page.evaluate('backgroundRefresh()')
@@ -92,6 +97,8 @@ def test_welcome_tour_real_targets_claim_reload_and_keyboard(browser_bank, width
         capture(page, 'tour-' + selector.replace('#', '').split('[')[0].replace('.', ''), width)
         page.locator('#tourNext').focus()
         page.keyboard.press('Enter')
+    api.expect(page.locator('#tourTitle')).to_contain_text('A few things to know')
+    page.locator('#tourNext').click()
     api.expect(page.locator('#productTour')).not_to_be_visible()
     assert snapshot(host, family) == before  # A tour never collects or moves money.
     assert page.locator('#dadBtn').get_attribute('aria-describedby') is None
@@ -102,13 +109,13 @@ def test_welcome_tour_real_targets_claim_reload_and_keyboard(browser_bank, width
     assert page.locator('.reward-btn[data-kind="interest"]').count() == 0
     assert page.locator('#guestWelcome').count() == 0
     assert snapshot(host, family)['history'][-1][3] == 701
-    page.locator('#dadBtn').click()
+    open_parent(page)
     page.locator('#replayTour').click()
     page.keyboard.press('Escape')
     api.expect(page.locator('#productTour')).not_to_be_visible()
     assert page.evaluate('document.activeElement.id') == 'dadBtn'
     assert page.locator('.tour-target').count() == 0
-    page.locator('#dadBtn').click()
+    open_parent(page)
     api.expect(page.locator('#keepAwake')).not_to_be_checked()
     assert errors == []
     ctx.close()
@@ -150,7 +157,7 @@ def test_hosted_awake_control_and_skip_offer(browser_bank, width, controlled):
     page.locator('#tryGuestBank').click()
     page.get_by_role('button', name='Skip tour').click()
     api.expect(page.locator('#productTour')).not_to_be_visible()
-    page.locator('#dadBtn').click()
+    open_parent(page)
     toggle = page.get_by_role('switch', name='Keep screen awake')
     api.expect(toggle).not_to_be_checked()
     with host.connect() as conn:
@@ -164,14 +171,14 @@ def test_hosted_awake_control_and_skip_offer(browser_bank, width, controlled):
         page.locator('#closeDad').click()  # Keep working after closing controls.
         if controlled:
             assert page.evaluate('__wake.locks.filter(lock => !lock.released).length') == 1
-        page.locator('#dadBtn').click()
+        open_parent(page)
         toggle.uncheck()
         api.expect(page.locator('#awakeStatus')).to_have_text('Off')
     else:
         api.expect(toggle).to_be_disabled()
     assert snapshot(host, family) == before
     page.reload()
-    page.locator('#dadBtn').click()
+    open_parent(page)
     api.expect(toggle).not_to_be_checked()
     api.expect(page.locator('#productTour')).not_to_be_visible()
     assert not providers['customers'] and not providers['checkouts']

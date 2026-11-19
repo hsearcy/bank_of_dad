@@ -1,4 +1,6 @@
 """Real self-hosted PIN, Chromium controls, push and disposable persistence."""
+from parent_pin_ui import open_parent
+
 import os
 import sqlite3
 import subprocess
@@ -48,9 +50,7 @@ class KidManagementBrowserTests(AppServerCase):
                 page.goto(self.origin)
                 page.wait_for_function('window.__sockets.some(s => s.readyState === 1)')
             def unlock(page):
-                page.locator('#dadBtn').click()
-                for digit in '1234':
-                    page.locator(f'.keypad button[data-k="{digit}"]').click()
+                open_parent(page)
                 page.locator('#dadPanel').wait_for(state='visible')
             exercise_kid_controls(pages[0], pages[1], unlock)
             assert self.get_state()['kids'] == []

@@ -3,6 +3,8 @@
 Run BANK_OF_DAD_BROWSER_TESTS=1 python -m unittest discover -s tests -p '*browser.py' -v
 Requires: pip install playwright && python -m playwright install chromium
 """
+from parent_pin_ui import open_parent
+
 import os
 import unittest
 
@@ -54,9 +56,7 @@ class RealtimeBrowserTests(test_realtime.AppServerCase):
                                arg=amount, timeout=5000)
 
     def unlock_dad(self, page):
-        page.locator("#dadBtn").click()
-        for digit in "1234":
-            page.locator(f'.keypad button[data-k="{digit}"]').click()
+        open_parent(page)
         page.locator("#dadPanel").wait_for(state="visible")
 
     def test_real_controls_push_between_two_browsers_and_keep_animations(self):
@@ -71,7 +71,7 @@ class RealtimeBrowserTests(test_realtime.AppServerCase):
         self.assertTrue(b.evaluate("window.__frames.some(f => JSON.parse(f).type === 'state_changed')"))
         a.locator("#closeDad").click()
         # An open input on the remote browser survives a pushed dashboard update.
-        b.locator(".btn-spend").click()
+        b.locator(".wallet .btn-spend").click()
         b.locator(".spend-reason").fill("in progress")
         a.locator(".btn-save").click()
         a.locator(".custom-amt").fill("1")
@@ -141,7 +141,7 @@ class RealtimeBrowserTests(test_realtime.AppServerCase):
         self.wait_money(page, "$5.75")
         self.assertNotEqual(old_chart, page.locator(".expanded-chart").inner_html())
         page.locator(".graph-close").click()
-        page.locator(".btn-spend").click()
+        page.locator(".wallet .btn-spend").click()
         page.locator(".spend-reason").fill("keep this form")
         self.post("/api/admin/gift", {"kid_id": self.kid_id, "amount_cents": 25})
         self.wait_money(page, "$6.00")

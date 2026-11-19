@@ -2,6 +2,11 @@
 
 Identity and Stripe endpoints remain the explicitly synthetic HTTP fixtures.
 """
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / 'tests'))
+from parent_pin_ui import open_parent
+
 import os
 import threading
 
@@ -41,7 +46,7 @@ def test_browser_parent_to_family_bank_and_signout(hosted_app):
             page.on('pageerror', lambda error: errors.append(str(error)))
             page.goto(origin + '/auth/login')
             sync_api.expect(page.locator('#dadBtn')).to_be_visible()
-            page.locator('#dadBtn').click()
+            open_parent(page)
             page.locator('.dad-account summary').click()
             sync_api.expect(page.locator('.access-badge')).to_contain_text('Free trial')
             page.get_by_role('button', name='Subscribe with Stripe').click()
@@ -54,8 +59,9 @@ def test_browser_parent_to_family_bank_and_signout(hosted_app):
             page.get_by_role('link', name='Open your family bank').click()
             sync_api.expect(page.locator('#dadBtn')).to_be_visible()
             assert page.locator('meta[name="csrf-token"]').count() == 1
-            # Parent auth replaces PIN: no PIN setup/prompt is shown.
-            page.locator('#dadBtn').click()
+            # Hosted identity still requires the additional shared-device PIN.
+            # A bare Dad click leaves #newKidName hidden behind that real gate.
+            open_parent(page)
             page.locator('#newKidName').fill('Browser Nickname')
             page.locator('#addKidBtn').click()
             sync_api.expect(page.locator('.dk-head')).to_contain_text('Browser Nickname')
@@ -74,7 +80,7 @@ def test_browser_parent_to_family_bank_and_signout(hosted_app):
             other = browser.new_context(ignore_https_errors=True)
             denied = other.request.get(origin + '/api/state')
             assert denied.status == 401
-            page.locator('#dadBtn').click()
+            open_parent(page)
             page.locator('.dad-account summary').click()
             page.get_by_role('button', name='Sign out of Bank of Dad').click()
             sync_api.expect(page.get_by_text('You are signed out of Bank of Dad.')).to_be_visible()

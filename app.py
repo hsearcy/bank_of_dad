@@ -67,7 +67,7 @@ if sock is not None:
 # failed business operations, PIN verification, denied requests or exceptions.
 MUTATION_ENDPOINTS = {
     "api_collect", "api_save", "api_withdraw", "api_bond", "api_spend",
-    "api_admin_set_pin", "api_gift", "api_add_kid", "api_update_kid",
+    "api_admin_set_pin", "api_parent_label", "api_gift", "api_add_kid", "api_update_kid",
     "api_set_allowance", "api_tx_delete", "api_tx_edit", "api_set_rates",
     "api_fastforward", "api_remove_kid",
 }
@@ -75,9 +75,10 @@ MUTATION_ENDPOINTS = {
 
 @app.after_request
 def notify_mutation(response):
-    if (request.method == "POST" and request.endpoint in MUTATION_ENDPOINTS
-            and 200 <= response.status_code < 300 and response.is_json
-            and response.get_json().get("ok") is True):
+    if (request.environ.get("bod.auto_changed") or
+            (request.method == "POST" and request.endpoint in MUTATION_ENDPOINTS
+             and 200 <= response.status_code < 300 and response.is_json
+             and response.get_json().get("ok") is True)):
         # Workers publish only after the enclosing Durable Object commit.
         if CLOUDFLARE:
             request.environ['bod.changed'] = True
@@ -93,10 +94,13 @@ def cfg(conn):
     """Kid-facing rules, for the UI to explain how money grows (Dad-tunable
     savings + investment rates come from the DB, else config defaults)."""
     return {
+        "parent_label": bank.parent_label(conn),
         "allowance_dollars": config.ALLOWANCE_CENTS / 100,
         "allowance_period_days": config.ALLOWANCE_PERIOD_DAYS,
         "savings_weekly_pct": bank.savings_period_pct(conn),
         "savings_period_days": bank.savings_period_days(conn),
+        "auto_interest_enabled": bank.auto_interest_enabled(conn),
+        "auto_interest_background": CLOUDFLARE,
         "min_move_cents": config.MIN_MOVE_CENTS,
         "bonds": [
             {"key": k, "label": bank.duration_label(bank.bond_days(conn, k)), "days": bank.bond_days(conn, k),
@@ -119,6 +123,11 @@ def service_worker():
     resp.headers["Service-Worker-Allowed"] = "/"
     resp.headers["Cache-Control"] = "no-cache"
     return resp
+
+
+@app.errorhandler(bank.InterestCatchupPending)
+def interest_catchup_pending(error):
+    return jsonify(ok=False, message=str(error)), 503
 
 
 @app.route("/api/state")
@@ -217,12 +226,11 @@ def _pin():
 
 
 def _pin_ok(conn):
-    """403 JSON response if the Dad PIN is set and wasn't supplied/correct;
-    otherwise None (allowed)."""
-    if CLOUDFLARE or hosted.enabled():
-        return None  # The hosted adapter already authorized this family capability.
-    if not bank.check_dad_pin(conn, _pin()):
-        return jsonify({"ok": False, "error": "Wrong PIN"}), 403
+    """Require the family PIN in addition to hosted identity/capability checks."""
+    if not bank.dad_pin_set(conn):
+        return jsonify(ok=False, error="Set a parent PIN first."), 403
+    if not bank.authorize_dad_pin(conn, _pin()):
+        return jsonify(ok=False, error="Wrong PIN or too many attempts. Wait a minute and try again."), 403
     return None
 
 
@@ -239,7 +247,9 @@ def api_admin_status():
 def api_admin_verify():
     conn = db.get_conn()
     try:
-        return jsonify({"ok": bank.check_dad_pin(conn, _pin())})
+        ok = bank.authorize_dad_pin(conn, _pin())
+        conn.commit()  # Persist a successful throttle reset on this verify-only request.
+        return jsonify({"ok": ok})
     finally:
         conn.close()
 
@@ -254,6 +264,23 @@ def api_admin_set_pin():
             (request.json or {}).get("current_pin"),
         )
         return jsonify({"ok": ok, "message": msg}), (200 if ok else 403)
+    finally:
+        conn.close()
+
+
+@app.route("/api/admin/label", methods=["POST"])
+def api_parent_label():
+    conn = db.get_conn()
+    try:
+        denied = _pin_ok(conn)
+        if denied:
+            return denied
+        body = request.get_json(silent=True)
+        try:
+            bank.set_parent_label(conn, body.get('parent_label') if isinstance(body, dict) else None)
+        except ValueError as error:
+            return jsonify(ok=False, message=str(error)), 400
+        return jsonify(ok=True)
     finally:
         conn.close()
 
@@ -386,7 +413,8 @@ def api_set_rates():
             return jsonify({"ok": False, "message": "Expected rate settings"}), 400
         try:
             bank.set_rates(conn, body.get("savings_weekly_pct"), body.get("returns"),
-                           body.get("savings_period_days"), body.get("bond_period_days"))
+                           body.get("savings_period_days"), body.get("bond_period_days"),
+                           body.get("auto_interest_enabled"))
             conn.commit()  # Request-owned SQLite transaction; a no-op inside the DO.
         except (ValueError, OverflowError):
             return jsonify({"ok": False, "message": "Use nonnegative finite percentages and whole periods of 1–3650 days."}), 400

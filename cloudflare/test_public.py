@@ -118,11 +118,12 @@ def test_workerd_public_bank_cookies_host_origin_and_trial(public):
     for path in ('/', '/static/style.css', '/auth/login', '/auth/callback', '/owner', '/billing/webhook'):
         assert public.call(path, cookie=cookie, headers={'Host': 'foreign.invalid'})[0] == 503
         assert public.call(path, cookie=cookie, origin='https://foreign.invalid')[0] == 403
+    assert public.call('/api/admin/pin', cookie=cookie, csrf=csrf, body={'new_pin': '1234'})[1]['ok']
     for origin in (False, 'null', 'https://foreign.invalid'):
         assert public.call('/api/admin/gift', cookie=cookie, csrf=csrf, origin=origin,
-                           body={'kid_id': 1, 'amount_cents': 99})[0] == 403
+                           headers={'X-Dad-Pin': '1234'}, body={'kid_id': 1, 'amount_cents': 99})[0] == 403
     assert public.call('/api/admin/gift', cookie=cookie, csrf=csrf,
-                       body={'kid_id': 1, 'amount_cents': 99})[0] == 200
+                       headers={'X-Dad-Pin': '1234'}, body={'kid_id': 1, 'amount_cents': 99})[0] == 200
     billing = public.call('/billing', cookie=cookie)[1]
     assert 'payments unavailable' in billing
     assert 'action="/billing/checkout"' not in billing

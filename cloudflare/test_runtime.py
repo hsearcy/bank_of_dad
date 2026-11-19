@@ -3,6 +3,11 @@
 Run from cloudflare/: uv run pytest -q test_runtime.py
 Every run owns a loopback process group and disposable persistence directory.
 """
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / 'tests'))
+from parent_pin_ui import open_parent
+
 import contextlib
 import json
 import os
@@ -126,6 +131,16 @@ class Runtime:
         csrf = re.search(r'name="csrf-token" content="([0-9a-f]+)"', html)[1]
         return cookie, csrf
 
+    def parent_guest(self):
+        cookie, token = self.guest()
+        assert self.call('/api/admin/pin', cookie=cookie, csrf=token,
+                         body={'new_pin': '1234'})[1]['ok']
+        return cookie, token
+
+    def parent_call(self, path, **kwargs):
+        headers = {'X-Dad-Pin': '1234', **kwargs.pop('headers', {})}
+        return self.call(path, headers=headers, **kwargs)
+
     def database(self, cookie):
         family = cookie.split('=')[1].split('.')[0]
         for path in (self.base / 'state').rglob('*.sqlite'):
@@ -157,7 +172,7 @@ def test_current_routes_against_independent_sqlite_oracle(runtime, tmp_path):
     import bank
     import db
     from guest_bank import create_sample
-    cookie, csrf = runtime.guest()
+    cookie, csrf = runtime.parent_guest()
     initial = state(runtime, cookie)
     assert (initial['kids'][0]['wallet_cents'], initial['kids'][0]['savings_cents'], initial['kids'][0]['invest_cents']) == (500, 100, 100)
     path = tmp_path / 'oracle.sqlite'
@@ -165,7 +180,7 @@ def test_current_routes_against_independent_sqlite_oracle(runtime, tmp_path):
     oracle = db.get_conn(path)
     create_sample(oracle)
     def action(path, body, fn):
-        code, result, _ = runtime.call(path, cookie=cookie, csrf=csrf, body=body)
+        code, result, _ = runtime.parent_call(path, cookie=cookie, csrf=csrf, body=body)
         assert code == 200 and result['ok'], result
         fn()
         actual = state(runtime, cookie)['kids'][0]
@@ -201,15 +216,15 @@ def test_current_routes_against_independent_sqlite_oracle(runtime, tmp_path):
 def test_authority_isolation_csrf_and_incomplete_paths(runtime):
     assert runtime.call('/', headers={'Cookie': 'unrelated=value'})[0] == 200
     assert runtime.call('/', cookie='bod-local-session=malformed')[0] == 401
-    a, csrf = runtime.guest()
-    b, _ = runtime.guest()
+    a, csrf = runtime.parent_guest()
+    b, _ = runtime.parent_guest()
     assert a != b
     assert runtime.call('/api/state')[0] == 401
-    assert runtime.call('/api/admin/gift', cookie=a, body=dict(kid_id=1, amount_cents=100))[0] == 403
-    assert runtime.call('/api/admin/gift', cookie=a, csrf=csrf, origin='https://foreign.invalid', body=dict(kid_id=1, amount_cents=100))[0] == 403
-    assert runtime.call('/api/admin/gift', cookie=a, csrf=csrf, origin=False, body=dict(kid_id=1, amount_cents=100))[0] == 403
-    assert runtime.call('/api/admin/gift', cookie=a, csrf=csrf, body=dict(kid_id=999, amount_cents=100))[0] == 404
-    assert runtime.call('/api/admin/gift', cookie=a, csrf=csrf, body=dict(kid_id=1, amount_cents=75))[0] == 200
+    assert runtime.parent_call('/api/admin/gift', cookie=a, body=dict(kid_id=1, amount_cents=100))[0] == 403
+    assert runtime.parent_call('/api/admin/gift', cookie=a, csrf=csrf, origin='https://foreign.invalid', body=dict(kid_id=1, amount_cents=100))[0] == 403
+    assert runtime.parent_call('/api/admin/gift', cookie=a, csrf=csrf, origin=False, body=dict(kid_id=1, amount_cents=100))[0] == 403
+    assert runtime.parent_call('/api/admin/gift', cookie=a, csrf=csrf, body=dict(kid_id=999, amount_cents=100))[0] == 404
+    assert runtime.parent_call('/api/admin/gift', cookie=a, csrf=csrf, body=dict(kid_id=1, amount_cents=75))[0] == 200
     assert state(runtime, b)['kids'][0]['wallet_cents'] == 500
     assert state(runtime, a)['kids'][0]['wallet_cents'] == 575
     forged = a.split('.')[0] + '.' + '0' * 64
@@ -232,15 +247,15 @@ def snapshot(path):
 
 
 def test_real_sql_failure_rolls_back_and_restart_retains_bank(runtime):
-    cookie, csrf = runtime.guest()
-    assert runtime.call('/api/admin/gift', cookie=cookie, csrf=csrf, body=dict(kid_id=1, amount_cents=125))[0] == 200
+    cookie, csrf = runtime.parent_guest()
+    assert runtime.parent_call('/api/admin/gift', cookie=cookie, csrf=csrf, body=dict(kid_id=1, amount_cents=125))[0] == 200
     runtime.stop()
     path = runtime.database(cookie)
     with sqlite3.connect(path) as conn:
         conn.execute("CREATE TRIGGER fail_history BEFORE INSERT ON history BEGIN SELECT RAISE(ABORT, 'test rollback'); END")
     before = snapshot(path)
     runtime.start()
-    assert runtime.call('/api/admin/gift', cookie=cookie, csrf=csrf, body=dict(kid_id=1, amount_cents=250))[0] == 500
+    assert runtime.parent_call('/api/admin/gift', cookie=cookie, csrf=csrf, body=dict(kid_id=1, amount_cents=250))[0] == 500
     assert state(runtime, cookie)['kids'][0]['wallet_cents'] == 625
     runtime.stop()
     assert snapshot(path) == before  # wallet, ledger, history, metadata and sequence
@@ -289,7 +304,7 @@ def test_real_frontend_two_browser_push_isolation_reconnect_and_logout(runtime):
             c.goto(runtime.origin)
             for page in (a, b, c):
                 page.wait_for_function('window.__sockets.some(s => s.readyState === 1)')
-            a.locator('#dadBtn').click()
+            open_parent(a)
             a.locator('.gift-amt').fill('2')
             a.locator('.gift-note').fill('Browser chores')
             a.locator('.gift-btn').click()
@@ -314,7 +329,7 @@ def test_real_frontend_two_browser_push_isolation_reconnect_and_logout(runtime):
             # socket is revoked; the old capability cannot read any more.
             cookies = ctx.cookies()
             old = next(x for x in cookies if x['name'] == 'bod-local-session')
-            a.locator('#dadBtn').click()
+            open_parent(a)
             a.locator('.dad-account summary').click()
             a.locator('.account-signout button').click()
             a.wait_for_url('**/auth/signed-out')
@@ -325,10 +340,10 @@ def test_real_frontend_two_browser_push_isolation_reconnect_and_logout(runtime):
 
 
 def test_financial_bridge_rejects_unsafe_numbers_without_partial_writes(runtime):
-    cookie, csrf = runtime.guest()
+    cookie, csrf = runtime.parent_guest()
     before = state(runtime, cookie)['kids'][0]
     # Individually exact amount; adding it to an existing balance is unsafe.
-    code, _, _ = runtime.call('/api/admin/gift', cookie=cookie, csrf=csrf,
+    code, _, _ = runtime.parent_call('/api/admin/gift', cookie=cookie, csrf=csrf,
                               body=dict(kid_id=1, amount_cents=2**53 - 1))
     assert code == 500
     after = state(runtime, cookie)['kids'][0]
@@ -341,7 +356,7 @@ def test_financial_bridge_rejects_unsafe_numbers_without_partial_writes(runtime)
 def test_socket_authorization_and_real_idle_expiry_alarm(runtime):
     from websockets.sync.client import connect
     from websockets.exceptions import InvalidStatus, ConnectionClosed
-    cookie, csrf = runtime.guest()
+    cookie, csrf = runtime.parent_guest()
     url = runtime.origin.replace('http:', 'ws:') + '/api/updates'
     for candidate, origin, status in ((None, runtime.origin, 401),
                                       (cookie, 'https://foreign.invalid', 403),
@@ -365,7 +380,7 @@ def test_socket_authorization_and_real_idle_expiry_alarm(runtime):
                 ws.recv(timeout=50)
         assert closed.value.rcvd.code == 1008
     assert runtime.call('/api/state', cookie=cookie)[0] == 402
-    assert runtime.call('/api/admin/gift', cookie=cookie, csrf=csrf, body=dict(kid_id=1, amount_cents=100))[0] == 402
+    assert runtime.parent_call('/api/admin/gift', cookie=cookie, csrf=csrf, body=dict(kid_id=1, amount_cents=100))[0] == 402
     with sqlite3.connect(path) as conn:
         assert conn.execute('SELECT trial_until FROM _bod_family').fetchone()[0] == deadline
         assert conn.execute('SELECT wallet_cents FROM kids WHERE id=1').fetchone()[0] == 500

@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS kids (
     allowance_periods_paid  INTEGER NOT NULL DEFAULT 0,
     savings_accrued_ts      REAL NOT NULL,
     savings_interest_carry  REAL NOT NULL DEFAULT 0,
+    savings_interest_exact  TEXT,
+    auto_interest_due_ts    REAL,
     created_ts              REAL NOT NULL
 );
 
@@ -159,6 +161,10 @@ def _migrate(conn):
         conn.execute("ALTER TABLE transactions ADD COLUMN bond_id INTEGER")
 
     kid_cols = {r["name"] for r in conn.execute("PRAGMA table_info(kids)")}
+    if "savings_interest_exact" not in kid_cols:
+        conn.execute("ALTER TABLE kids ADD COLUMN savings_interest_exact TEXT")
+    if "auto_interest_due_ts" not in kid_cols:
+        conn.execute("ALTER TABLE kids ADD COLUMN auto_interest_due_ts REAL")
     if "savings_interest_carry" not in kid_cols:
         conn.execute("ALTER TABLE kids ADD COLUMN savings_interest_carry REAL NOT NULL DEFAULT 0")
     if "allowance_enabled" not in kid_cols:
@@ -173,5 +179,5 @@ def _migrate(conn):
                      (config.ALLOWANCE_PERIOD_DAYS,))
     return (not {"wallet_cents", "savings_cents", "invest_cents"} <= hist_cols
             or "bond_id" not in tx_cols
-            or not {"savings_interest_carry", "allowance_enabled", "allowance_cents",
+            or not {"savings_interest_exact", "auto_interest_due_ts", "savings_interest_carry", "allowance_enabled", "allowance_cents",
                     "allowance_period_days"} <= kid_cols)

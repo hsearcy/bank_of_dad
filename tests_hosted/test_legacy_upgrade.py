@@ -36,7 +36,8 @@ def legacy_family(host, now):
     # Create the OLD schema directly: never initialize a modern bank and erase a
     # column, and never log in to accidentally migrate the fixture before testing.
     with sqlite3.connect(path) as conn:
-        conn.executescript(db.SCHEMA.replace('    savings_interest_carry  REAL NOT NULL DEFAULT 0,\n', ''))
+        conn.executescript(db.SCHEMA.replace('    savings_interest_carry  REAL NOT NULL DEFAULT 0,\n', '')
+                           .replace('    savings_interest_exact  TEXT,\n', ''))
         conn.execute("INSERT INTO kids(id,name,wallet_cents,savings_cents,allowance_enabled,allowance_anchor_ts,savings_accrued_ts,created_ts) VALUES(7,'Retained',5000,10000,0,?,?,?)",
                      (now - 7 * 86400, now - 7 * 86400, now - 30 * 86400))
         conn.execute("INSERT INTO bonds(kid_id,term_key,principal_cents,payout_cents,buy_ts,mature_ts) VALUES(7,'1mo',100,125,?,?)",
@@ -105,14 +106,17 @@ def test_retained_session_migrates_only_on_authorized_bank_open(hosted_app, role
             assert after['history'] == before['history']
             restored = dict(after['kids'][0])
             carry = restored.pop('savings_interest_carry')
+            exact = restored.pop('savings_interest_exact')
             if first == 'rates':
                 assert carry == 400
+                assert exact == f'400@{float(now).hex()}'
                 assert restored.pop('savings_accrued_ts') == now
                 expected = dict(before['kids'][0])
                 expected.pop('savings_accrued_ts')
                 assert restored == expected
             else:
                 assert carry == 0
+                assert exact is None
                 assert restored == before['kids'][0]
                 assert after['settings'] == before['settings']
                 assert after['sqlite_sequence'] == before['sqlite_sequence']
@@ -121,7 +125,10 @@ def test_retained_session_migrates_only_on_authorized_bank_open(hosted_app, role
                         'save': (4900, 10500, 'save', 100),
                         'withdraw': (5100, 10300, 'withdraw', 100)}[first]
             assert (after['kids'][0]['wallet_cents'], after['kids'][0]['savings_cents']) == expected[:2]
-            assert len(after['transactions']) == len(before['transactions']) + 1
+            extra = 1 if first == 'collect' else 2
+            assert len(after['transactions']) == len(before['transactions']) + extra
+            if first != 'collect':
+                assert (after['transactions'][-2]['kind'], after['transactions'][-2]['amount_cents']) == ('interest', 400)
             assert (after['transactions'][-1]['kind'], after['transactions'][-1]['amount_cents']) == expected[2:]
             assert len(after['history']) == len(before['history']) + 1
         # Current-schema reads must be a true no-op, not reseeding or rewriting.

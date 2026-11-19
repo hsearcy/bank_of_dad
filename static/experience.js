@@ -4,23 +4,33 @@ const BodExperience = (() => {
   const find = selector => document.querySelector(selector);
   let tour, step = -1, target = null, describedBy = null, returnFocus = null;
   let steps = [];
+  let paused = false;
   const allSteps = [
-    ['#dadBtn', 'Dad is your dashboard', 'Open Dad to add your kids, give money, set allowance and adjust rates. You can also save / sync a hosted bank there.'],
+    ['#dadBtn', 'Your parent dashboard', 'Open the parent controls to add your kids, give money, set allowance and adjust rates. You can also save / sync a hosted bank there.'],
     [() => find('.reward-btn[data-kind="interest"]') || find('.btn-save'), 'Collect a little growth', 'Tap Savings Interest when it’s ready. It goes back into savings, so future interest can earn interest too.'],
-    ['.btn-save', 'Give saving a try', 'Save coins moves money from the wallet into savings. You choose the amount, and can take savings out again. Nothing moves during this tour.'],
-    ['.btn-bond', 'Practice patience', 'Invest coins locks money for a chosen term. When it’s ready, collect the payout. Compare saving and investing on the growth chart.']
+    ['.btn-save', 'Give saving a try', 'Move money from the wallet into savings, or take savings out again. You choose the amount. The tour itself moves nothing; using the real controls saves your changes.'],
+    ['.btn-bond', 'Practice patience', 'Invest money locks money for a chosen term. When it’s ready, collect the payout. Compare saving and investing on the growth chart.'],
+    ['.wallet-actions', 'Four tools below the graph', 'Spend records a purchase. What if previews possible growth without moving money. History shows past activity. Expand graph opens a bigger view. Try any tool — your tour will wait.'],
+    [null, 'A few things to know', 'This is not a real bank. The founder uses it to track his own kids’ real balances, but this service is just a tracker.\n\nAn always-on shared tablet works especially well, but is optional.\n\nKids currently claim interest themselves, so they can feel their money grow.\n\nDefault savings and investment rates are intentionally VERY HIGH so young kids can see growth. Parents can change them in the parent dashboard.']
   ];
   const stepTarget = item => typeof item[0] === 'function' ? item[0]() : find(item[0]);
   function stepText(item, element) {
     if (item === allSteps[0] && !find('.btn-save')) {
-      return 'Open Dad to add your first kid. Then replay this tour to explore saving, interest and investing. Nothing is added or moved during this tour.';
+      return `Open ${parentName()} to add your first kid. Then replay this tour to explore saving, interest and investing. Nothing is added or moved by the tour itself.`;
+    }
+    if (item === allSteps[5]) {
+      const mode = STATE.config.auto_interest_enabled
+        ? 'Manual interest collection is the default. Automatic savings interest is on for this family: earned interest was collected when enabled, and now collects once every configured savings period instead of waiting for a manual claim.'
+        : 'Manual interest collection is the default: kids claim interest themselves, so they can feel their money grow.';
+      return item[2].replace('Kids currently claim interest themselves, so they can feel their money grow.', `${mode} ${parentName()} can change the optional automatic setting in the parent dashboard.`);
     }
     if (item === allSteps[1]) {
+      if (STATE.config.auto_interest_enabled) return `Savings interest collects automatically once every configured savings period. Save money to grow savings; saving does not trigger an extra collection. ${parentName()} can switch back to manual collection in the parent dashboard.`;
       return element.matches('.reward-btn[data-kind="interest"]')
         ? item[2] + ' There’s a little ready to try now.'
-        : 'Start with Save coins to put money into savings. Savings Interest appears when there’s some ready to collect; it goes back into savings to earn interest too. Nothing moves during this tour.';
+        : 'Start with Save money to put money into savings. Savings Interest appears when there’s some ready to collect; it goes back into savings to earn interest too. Nothing moves during this tour.';
     }
-    return item[2];
+    return item === allSteps[0] ? item[2].replace('Open Dad', `Open ${parentName()}`) : item[2];
   }
   function clearTarget() {
     if (!target) return;
@@ -34,11 +44,14 @@ const BodExperience = (() => {
   }
   function point(scroll = false) {
     clearTarget();
-    if (tour.hidden || step < 0) return;
-    target = stepTarget(steps[step]);
-    if (!target) return;
-    find('#tourText').textContent = stepText(steps[step], target);
+    if (tour.hidden || paused || step < 0) return;
+    const item = steps[step];
+    target = stepTarget(item);
+    find('#tourText').textContent = target || !item[0]
+      ? stepText(item, target)
+      : 'This control is no longer available. Continue the tour, or open the parent dashboard to add a kid.';
     sizeTour();
+    if (!target) return;
     describedBy = target.getAttribute('aria-describedby');
     target.classList.add('tour-target');
     target.setAttribute('aria-describedby', [describedBy, 'tourText'].filter(Boolean).join(' '));
@@ -52,10 +65,27 @@ const BodExperience = (() => {
     }
   }
   function showStep() {
-    find('#tourTitle').textContent = `${step + 1} of ${steps.length} · ${steps[step][1]}`;
+    find('#tourTitle').textContent = `${step + 1} of ${steps.length} · ${steps[step] === allSteps[0] ? `${parentName()} is your dashboard` : steps[step][1]}`;
     find('#tourNext').textContent = step === steps.length - 1 ? 'Done' : 'Next';
     find('#tourTitle').focus({preventScroll: true});
     point(true);
+  }
+  // Real controls remain real: suspend only the guide while a panel is in
+  // front. No clicks are cancelled, no form contents or bank state are touched.
+  function syncPanels() {
+    const blocked = !!find('.panel:not(.hidden), dialog[open]');
+    if (tour.hidden || paused === blocked) return;
+    paused = blocked;
+    tour.classList.toggle('tour-paused', paused);
+    tour.inert = paused;
+    if (paused) {
+      tour.setAttribute('aria-hidden', 'true');
+      clearTarget();
+    } else {
+      tour.removeAttribute('aria-hidden');
+      point(true);
+      find('#tourTitle').focus({preventScroll: true});
+    }
   }
   function closeTour(restoreFocus = true) {
     if (tour.hidden) return;
@@ -71,8 +101,12 @@ const BodExperience = (() => {
   function offer() {
     returnFocus = document.activeElement.closest('button, a, input, [tabindex]') || find('#dadBtn');
     // Only offer controls that exist in this bank; an empty bank starts with Dad.
-    steps = allSteps.filter(item => stepTarget(item));
+    steps = allSteps.filter(item => !item[0] || stepTarget(item));
     step = -1;
+    paused = false;
+    tour.inert = false;
+    tour.classList.remove('tour-paused');
+    tour.removeAttribute('aria-hidden');
     tour.hidden = false;
     find('#tourTitle').textContent = 'A quick look around?';
     find('#tourText').textContent = 'Quick pointers, right here in your bank. Skip any time — or explore on your own.';
@@ -143,15 +177,19 @@ const BodExperience = (() => {
       offer();
     };
     document.addEventListener('keydown', event => {
-      if (event.key === 'Escape' && !tour.hidden) {
+      if (event.key === 'Escape' && !tour.hidden && !paused) {
         event.preventDefault();
         closeTour();
       }
     });
-    // Leave the guide behind when opening real controls; it must not cover them.
-    document.addEventListener('click', event => {
-      if (!tour.hidden && event.target.closest('#dadBtn, #kids button')) closeTour(false);
-    });
+    // Existing panels include dynamically inserted PIN gates and nested native
+    // dialogs. Observe visibility only, not keystrokes or dashboard tick text.
+    new MutationObserver(records => {
+      if (records.some(record => record.type === 'attributes'
+        ? record.target.matches('.panel, dialog')
+        : record.target === document.body)) syncPanels();
+    }).observe(document.body, {subtree: true, childList: true,
+      attributes: true, attributeFilter: ['class', 'open']});
     window.addEventListener('resize', () => { sizeTour(); point(true); });
 
     toggle = find('#keepAwake');

@@ -22,6 +22,7 @@ from pyodide.ffi import create_proxy, to_js
 from workers import DurableObject, Response, WorkerEntrypoint, wsgi
 
 import db
+import bank
 from app import app
 from cloudflare_sql import Connection
 from cloudflare_templates import TEMPLATES
@@ -253,6 +254,7 @@ class FamilyBank(FamilyOwner, FamilyBilling, DurableObject):
                 # A failed notification must not turn a committed mutation into
                 # an apparent failed write. The real UI reconciles every 30s.
                 print('Bank update notification failed')
+        await self.arm_alarm()
         headers = js.Headers.new()
         for key, value in result['headers']:
             headers.append(key, value)
@@ -280,18 +282,37 @@ class FamilyBank(FamilyOwner, FamilyBilling, DurableObject):
     async def arm_alarm(self):
         family = self.transact(lambda c: self.billing_family(c, c.execute('SELECT * FROM _bod_family WHERE singleton=1').fetchone()))
         access = access_status(family)
-        if not access['active']:
-            return
-        deadlines = [access['until']] if access['until'] else []
+        deadlines = [access['until']] if access['active'] and access['until'] else []
+        def interest_deadline(c):
+            db._migrate(c)
+            if not bank.auto_interest_enabled(c):
+                return None
+            due = c.execute('SELECT MIN(auto_interest_due_ts) AS due FROM kids').fetchone()['due']
+            offset = float(db.get_setting(c, "time_offset", "0") or 0)
+            return max(time.time()+.01, due-offset) if due is not None else None
+        due = self.transact(interest_deadline)
+        if due is not None:
+            deadlines.append(due)
         # Never let a later device's socket postpone an earlier session expiry.
         saved = self.transact(lambda c: c.execute('SELECT MIN(expires) AS expires FROM _bod_sessions WHERE expires>?',
                                                   (time.time(),)).fetchone())
         if saved and saved['expires']:
             deadlines.append(saved['expires'])
         if deadlines:
-            await self.ctx.storage.setAlarm(math.ceil(min(deadlines) * 1000))
+            scheduled = math.ceil(min(deadlines) * 1000)
+            # Billing/owner writes may have queued an immediate invalidation.
+            # Never postpone it, or churn the persisted alarm on dashboard reads.
+            existing = await self.ctx.storage.getAlarm()
+            if existing is None or scheduled < float(existing):
+                await self.ctx.storage.setAlarm(scheduled)
 
     async def alarm(self):
+        # One persisted alarm multiplexes financial, session and access deadlines.
+        # Settlement and ledger are one transaction, even after an idle restart.
+        def settle(c):
+            db._migrate(c)
+            bank.settle_auto_interest(c)
+        self.transact(settle)
         self.publish()
         await self.arm_alarm()
 

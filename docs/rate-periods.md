@@ -7,6 +7,11 @@ accessible number fields, browser validation and an inline save/error status.
 
 ## Financial behavior
 
+These rules describe the default manual-collection mode. The optional family-wide
+[automatic-interest policy](automatic-interest.md) collects existing pending interest
+on enable, then compounds once per configured savings period. Rate/period edits
+still preserve already-earned interest; completed automatic periods settle first.
+
 - Defaults remain 4% per 7 days, +25% after 30 days, and +100% after 90 days.
   A day is 86,400 seconds; existing month labels mean fixed 30-day units, not
   calendar months. Investment identifiers `1mo` / `3mo` remain stable even if

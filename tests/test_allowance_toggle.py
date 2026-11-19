@@ -111,7 +111,9 @@ class AllowanceApiTests(AllowanceTestCase):
         super().setUp()
         import app
         app.app.config["TESTING"] = True
+        self.bank.set_dad_pin(self.conn, "1234")
         self.client = app.app.test_client()
+        self.client.environ_base["HTTP_X_DAD_PIN"] = "1234"
 
     def test_api_can_disable_and_reenable_allowance(self):
         disabled = self.client.post(

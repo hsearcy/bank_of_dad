@@ -1,4 +1,9 @@
 """Integrated duration/copy/claim contract on disposable real workerd state."""
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / 'tests'))
+from parent_pin_ui import open_parent
+
 import sqlite3
 import time
 
@@ -53,7 +58,7 @@ def test_legacy_trial_browser_claim_reload_restart_and_sample_maturity(tmp_path)
                 page.locator('#tryGuestBank').click()
                 page.locator('#tourSkip').click()
                 page.wait_for_function('window.__sockets.some(s => s.readyState === 1)')
-                page.locator('#dadBtn').click()
+                open_parent(page)
                 expect(page.locator('.dad-account summary')).to_contain_text('21d left')
                 page.locator('.dad-account summary').click()
                 expect(page.locator('.account-status').filter(has_text='21 days left')).to_have_count(1)
@@ -86,7 +91,7 @@ def test_legacy_trial_browser_claim_reload_restart_and_sample_maturity(tmp_path)
             # Advance the bank's educational clock only, not entitlement wall time.
             token = csrf(parent)
             result = parent.post('/api/admin/fastforward', json={'days': 30},
-                                 headers={'Origin': runtime.origin, 'X-CSRF-Token': token})
+                                 headers={'Origin': runtime.origin, 'X-CSRF-Token': token, 'X-Dad-Pin': '1234'})
             assert result.status_code == 200
             state = parent.get('/api/state').json()
             assert state['kids'][0]['bonds'][0]['ready'] is True

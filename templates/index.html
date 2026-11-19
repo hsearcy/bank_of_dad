@@ -17,7 +17,7 @@
 <body>
   {% if cloudflare_incomplete|default(false) %}<p class="account-note" role="status">Local Cloudflare preview: Google sign-in and Stripe sandbox billing need operator configuration and real-provider validation. Owner controls require a privately configured Google identity. Do not use real family data.</p>{% endif %}
   <header class="topbar">
-    <h1>🏦 Bank of Dad</h1>
+    <h1 id="bankTitle">🏦 Bank of Dad</h1>
     <button id="dadBtn" class="dad-btn" title="Dad controls">👨‍👧 Dad</button>
   </header>
 
@@ -27,7 +27,13 @@
   <!-- Dad panel -->
   <div id="dadPanel" class="panel hidden">
     <div class="panel-card">
-      <h2>👨‍👧 Dad Controls</h2>
+      <h2 id="parentPanelTitle">👨‍👧 Dad Controls</h2>
+      <form id="parentLabelForm">
+        <label for="parentLabel">Parent name or label</label>
+        <p id="parentLabelHelp" class="account-note">For example: Mom, Papa, Alex. Up to 40 characters.</p>
+        <div class="row"><input id="parentLabel" aria-describedby="parentLabelHelp" required><button type="submit" class="go">Save name</button></div>
+        <p id="parentLabelStatus" role="status"></p>
+      </form>
       <section class="device-controls" aria-label="This screen">
         <div class="device-row">
           <label class="awake-toggle"><input id="keepAwake" type="checkbox" role="switch" aria-describedby="awakeHelp awakeStatus"> Keep screen awake</label>
@@ -66,10 +72,10 @@
         <button class="ff" data-days="30">⏩ +1 month</button>
         <button class="ff" data-days="90">⏩ +3 months</button>
       </div>
-      <hr {% if session.get('family') %}hidden{% endif %}>
-      <h3 {% if session.get('family') %}hidden{% endif %}>Security</h3>
-      <div class="row" {% if session.get('family') %}hidden{% endif %}>
-        <button id="changePinBtn" class="go" style="background:#8b5cf6" {% if session.get('family') %}hidden{% endif %}>🔒 Set / Change Dad PIN</button>
+      <hr>
+      <h3>Security</h3>
+      <div class="row">
+        <button id="changePinBtn" class="go" style="background:#8b5cf6">🔒 Change Dad PIN</button>
       </div>
       <button id="closeDad" class="close">Close</button>
     </div>

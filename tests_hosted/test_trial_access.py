@@ -225,11 +225,23 @@ def test_trial_and_operator_access_on_real_family_scoped_websockets(hosted_app):
     login(b, state, origin, 'parent-b')
     sockets = []
     def closed(ws):
-        ws.settimeout(3)
-        try:
-            assert ws.recv() == ''
-        except WebSocketConnectionClosedException:
-            pass
+        # First-use PIN setup is a real committed mutation and can leave a
+        # content-free invalidation queued ahead of the server's Close frame.
+        # Receiving it is not proof of revocation: independently require closure
+        # within one fixed deadline, even if notifications keep arriving.
+        import json
+        deadline = time.monotonic() + 3
+        while True:
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, 'Socket did not close within revocation deadline'
+            ws.settimeout(remaining)
+            try:
+                frame = ws.recv()
+            except WebSocketConnectionClosedException:
+                return
+            if frame == '':
+                return
+            assert json.loads(frame) == {'type': 'state_changed'}
     with network(app) as base:
         try:
             for client in (a, a, b):

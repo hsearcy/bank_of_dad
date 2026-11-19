@@ -2,11 +2,16 @@
 
 Identity provider is a signed loopback fixture, not Google acceptance.
 """
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / 'tests'))
+from parent_pin_ui import open_parent
+
 import sqlite3
 import sys
 
 from test_runtime import ROOT, INIT, snapshot, state
-from test_oauth import oauth, client, login, csrf
+from test_oauth import oauth, client, login, csrf, setup_parent
 
 sys.path.insert(0, str(ROOT / 'tests'))
 from kid_management_ui import exercise_kid_controls
@@ -23,6 +28,8 @@ def test_parent_session_csrf_foreign_family_and_confirmations(oauth):
     with client(runtime) as a, client(runtime) as b:
         login(a, provider, 'kid-management-parent')
         login(b, provider, 'kid-management-other-parent')
+        setup_parent(a, runtime)
+        setup_parent(b, runtime)
         token = csrf(a)
         headers = {'Origin': runtime.origin, 'X-CSRF-Token': token}
         kid = a.get('/api/state').json()['kids'][0]['id']
@@ -51,14 +58,14 @@ def test_parent_session_csrf_foreign_family_and_confirmations(oauth):
 
 def test_cascade_failure_atomic_scope_and_restart(oauth):
     runtime, _ = oauth
-    cookie, token = runtime.guest()
+    cookie, token = runtime.parent_guest()
     kid = state(runtime, cookie)['kids'][0]['id']
-    assert runtime.call('/api/admin/kid', cookie=cookie, csrf=token, body={'name': 'Keep'})[1]['ok']
+    assert runtime.parent_call('/api/admin/kid', cookie=cookie, csrf=token, body={'name': 'Keep'})[1]['ok']
     sibling = state(runtime, cookie)['kids'][-1]['id']
     for route, body in [('/api/admin/gift', {'kid_id': sibling, 'amount_cents': 400}),
                         ('/api/save', {'kid_id': sibling, 'amount_cents': 100}),
                         ('/api/bond', {'kid_id': sibling, 'amount_cents': 100, 'term': '1mo'})]:
-        assert runtime.call(route, cookie=cookie, csrf=token, body=body)[1]['ok']
+        assert runtime.parent_call(route, cookie=cookie, csrf=token, body=body)[1]['ok']
     runtime.stop()
     path = runtime.database(cookie)
     with sqlite3.connect(path) as conn:
@@ -66,20 +73,20 @@ def test_cascade_failure_atomic_scope_and_restart(oauth):
     before = snapshot(path)
     preserved = child_rows(path, sibling)
     runtime.start()
-    assert runtime.call('/api/admin/kid/remove', cookie=cookie, csrf=token,
+    assert runtime.parent_call('/api/admin/kid/remove', cookie=cookie, csrf=token,
                         body={'kid_id': kid, 'confirm_name': 'Sample Kid'})[0] == 500
     runtime.stop()
     assert snapshot(path) == before
     with sqlite3.connect(path) as conn:
         conn.execute('DROP TRIGGER fail_remove')
     runtime.start()
-    assert runtime.call('/api/admin/kid/update', cookie=cookie, csrf=token,
+    assert runtime.parent_call('/api/admin/kid/update', cookie=cookie, csrf=token,
                         body={'kid_id': kid, 'name': 'Renamed sample'})[1]['ok']
     runtime.stop()
     renamed = child_rows(path, kid)
     runtime.start()
     assert state(runtime, cookie)['kids'][0]['name'] == 'Renamed sample'
-    assert runtime.call('/api/admin/kid/remove', cookie=cookie, csrf=token,
+    assert runtime.parent_call('/api/admin/kid/remove', cookie=cookie, csrf=token,
                         body={'kid_id': kid, 'confirm_name': 'Renamed sample'})[1]['ok']
     runtime.stop()
     assert all(not rows for rows in child_rows(path, kid).values())
@@ -114,7 +121,7 @@ def test_phone_controls_cancel_push_and_empty_bank(oauth):
         foreign.goto(runtime.origin)
         foreign.wait_for_function('window.__sockets.some(s => s.readyState === 1)')
         cookie = next(c for c in context.cookies() if c['name'] == 'bod-local-session')
-        exercise_kid_controls(a, b, lambda page: page.locator('#dadBtn').click())
+        exercise_kid_controls(a, b, lambda page: open_parent(page))
         assert b.evaluate('window.__frames.filter(f => JSON.parse(f).type === "state_changed").length') >= 4
         assert foreign.locator('#kids .name').inner_text() == 'Sample Kid'
         assert not foreign.evaluate('window.__frames.some(f => JSON.parse(f).type === "state_changed")')
