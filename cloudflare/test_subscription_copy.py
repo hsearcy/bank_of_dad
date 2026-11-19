@@ -59,7 +59,7 @@ def test_responsive_subscription_copy_guest_saved_owner_and_pilot(tmp_path):
                             if welcome.count():
                                 expect(welcome).to_be_visible()
                                 expect(welcome).to_contain_text('31 days')
-                                expect(welcome).to_contain_text('No automatic charge')
+                                expect(welcome).to_contain_text('No sign-up or card needed.')
                                 page.locator('#tryGuestBank').click()
                                 page.locator('#tourSkip').click()
                         open_parent(page)

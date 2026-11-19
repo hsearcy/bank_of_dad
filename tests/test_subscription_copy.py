@@ -81,4 +81,7 @@ def test_visible_trial_language_and_no_automatic_charge_disclosure():
         assert not re.search(r'(?:free week|for a week|(?:7|seven).day trial|trial lasts 7 days)', path.read_text(), re.I), path
     welcome = (ROOT / 'templates/index.html').read_text()
     assert 'Try it for 31 days on this device.' in welcome
-    assert 'No automatic charge.' in welcome
+    assert 'The free trial lasts 31 days. No automatic charge.' not in welcome
+    assert 'Checkout starts a paid annual subscription' in render_account()
+    assert 'Sample Kid has' not in welcome
+    assert 'sampleInterestNote' not in welcome

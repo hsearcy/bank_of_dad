@@ -77,7 +77,8 @@ def test_welcome_tour_real_targets_claim_reload_and_keyboard(browser_bank, width
     api.expect(welcome).to_be_visible()
     api.expect(welcome).to_contain_text('keep the lights on')
     api.expect(welcome).to_contain_text('31 days')
-    api.expect(welcome).to_contain_text('No automatic charge')
+    api.expect(welcome).not_to_contain_text('The free trial lasts 31 days. No automatic charge.')
+    api.expect(welcome).not_to_contain_text('Sample Kid has')
     api.expect(welcome).to_contain_text('not required')
     api.expect(welcome).to_contain_text('my kids')
     with host.connect() as conn:

@@ -108,14 +108,13 @@
   <dialog id="guestWelcome" class="guest-welcome" aria-labelledby="guestWelcomeTitle">
     <span class="welcome-icon" aria-hidden="true">🌱</span>
     <h2 id="guestWelcomeTitle" tabindex="-1" autofocus>Welcome to Bank of Dad</h2>
-    <p>A little family bank for practicing spending, saving and investing — not a real bank. Sample Kid has $5 to spend, $1 saved and $1 invested. <span id="sampleInterestNote" hidden>There’s a little savings interest ready to collect, too. </span>Try the controls, or make it your own in Dad.</p>
     <p>I built this to help my kids learn the basics of money, the value of saving, and the power of compounding when they start young. I hope it helps your family too.</p>
     <p><strong>Try it for 31 days on this device. No sign-up or card needed.</strong> Changes are saved in this browser’s bank.</p>
     <p class="guest-warning">Without an account, clearing browser data or switching devices can lose access to your bank and progress. Save / sync with an account any time in Dad, keeping everything you’ve done.</p>
     {% if public_pilot|default(false) %}
     <p class="guest-warning"><strong>Private pilot: payments are unavailable.</strong> Your trial lasts 31 days and then access pauses unless the operator separately grants free access. No automatic charge or permanent free access. Google sign-in is optional and depends on provider availability. Use sample names only; this pilot has not completed its privacy, retention and recovery review. {% if support_url %}<a href="{{ support_url }}">Contact support</a>.{% endif %}</p>
     {% else %}
-    <p>The free trial lasts 31 days. No automatic charge. If you’re enjoying the bank and want to help me keep the lights on, you can subscribe for $9.99/year. If that’s too much, {% if support_url %}<a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">please get in touch about free access</a> and I’ll see what we can do{% else %}please ask the person running this bank about free access — a contact link hasn’t been set up yet{% endif %}.</p>
+    <p>If your family enjoys it, $9.99/year helps me keep the lights on. If that’s a stretch, {% if support_url %}<a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">please get in touch about free access</a> — I’d love to help{% else %}please ask the person running this bank about free access — a contact link hasn’t been set up yet{% endif %}.</p>
     {% endif %}
     <p class="account-note">An old tablet left on for checking progress and collecting interest is handy, but not required — a phone or computer works too.</p>
     <button id="tryGuestBank" class="account-button account-primary">Let’s try it</button>
