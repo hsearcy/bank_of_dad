@@ -554,7 +554,9 @@ class Hosted:
                     attempt = json.loads(raw)
                     if attempt['scope'] != scope or attempt['values']['customer'] != customer:
                         return recovery
-                if attempt or (raw is None and not family['checkout_id']):
+                # A saved legacy ID may predate a replacement whose response
+                # was lost. It does not resolve a NULL attempt's ambiguity.
+                if attempt or raw is None:
                     query = {'customer': customer, 'limit': 100}
                     if attempt:
                         query['created'] = {'gte': int(attempt['created']) - 60}
@@ -563,21 +565,30 @@ class Hosted:
                         item = item.to_dict()
                         if item.get('customer') != customer or item.get('livemode') is not self.live:
                             return recovery
-                        if item.get('mode') != 'subscription' or item.get('status') == 'expired':
+                        if item.get('mode') != 'subscription':
                             continue
-                        if not attempt or item.get('metadata', {}).get('bod_attempt') != attempt['nonce']:
+                        matches = attempt and item.get('metadata', {}).get('bod_attempt') == attempt['nonce']
+                        if not matches:
+                            if item.get('status') == 'expired':
+                                continue
                             return recovery  # old time-window attempts cannot be safely identified
+                        # Expiry is evidence that this exact request is terminal,
+                        # not absence of evidence. Never replay its cached key.
                         candidates.append(item)
                     if len(candidates) > 1:
                         return recovery
                     if candidates:
                         checkout = candidates[0]
-                        if checkout['status'] != 'open':
+                        if checkout.get('status') == 'expired':
+                            attempt, checkout = None, None
+                        elif checkout.get('status') == 'complete':
                             conn.execute("UPDATE families SET checkout_id=?,checkout_expires=?,checkout_attempt='ready' WHERE id=?",
                                          (checkout['id'], checkout['expires_at'], family['id']))
                             portal = self.stripe.v1.billing_portal.sessions.create({
                                 'customer': customer, 'return_url': self.origin + '/billing'})
                             return redirect(portal.url, code=303)
+                        elif checkout.get('status') != 'open':
+                            return recovery
                     elif not attempt or not 0 <= time.time() - attempt['created'] < 23 * 3600:
                         return recovery
                 if not checkout:

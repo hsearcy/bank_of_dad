@@ -140,8 +140,16 @@ def hosted_app(tmp_path, monkeypatch, request):
 
     @provider.get('/v1/checkout/sessions')
     def list_checkout():
+        state.setdefault('checkout_list_calls', []).append(dict(flask_request.args))
+        if state.get('fail_checkout_list'):
+            return jsonify(error={'type': 'api_error', 'message': 'Synthetic outage'}), 503
         rows = [s for s in state['checkout_objects'].values() if s['customer'] == flask_request.args['customer']]
-        return jsonify(object='list', data=rows, has_more=False, url='/v1/checkout/sessions')
+        cursor = flask_request.args.get('starting_after')
+        if cursor:
+            rows = rows[next(i for i, s in enumerate(rows) if s['id'] == cursor) + 1:]
+        size = state.get('checkout_page_size', 100)
+        page = rows[:size]
+        return jsonify(object='list', data=page, has_more=len(rows) > size, url='/v1/checkout/sessions')
 
     @provider.post('/v1/billing_portal/sessions')
     def portal():
@@ -151,7 +159,7 @@ def hosted_app(tmp_path, monkeypatch, request):
     @provider.get('/v1/checkout/sessions/<checkout_id>')
     def retrieve_checkout(checkout_id):
         obj = dict(state['checkout_objects'][checkout_id])
-        obj.update(status=state.get('checkout_status', 'open'), subscription='sub_synthetic')
+        obj.update(status=state.get('checkout_status', obj['status']), subscription='sub_synthetic')
         return jsonify(obj)
 
     @provider.get('/v1/subscriptions/sub_synthetic')
