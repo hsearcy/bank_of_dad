@@ -532,6 +532,8 @@ class Hosted:
                 window = int(time.time() // 1800)
                 checkout = self.stripe.v1.checkout.sessions.create({
                     'mode': 'subscription', 'customer': customer,
+                    # Explicit session opt-out; never change account-wide payment policy.
+                    'managed_payments': {'enabled': False},
                     'line_items': [{'price': self.price, 'quantity': 1}],
                     'success_url': self.origin + '/billing', 'cancel_url': self.origin + '/billing',
                     'client_reference_id': family['id'],

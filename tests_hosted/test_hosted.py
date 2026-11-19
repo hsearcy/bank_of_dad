@@ -116,6 +116,7 @@ def hosted_app(tmp_path, monkeypatch, request):
     def checkout():
         data = flask_request.form.to_dict()
         assert data['mode'] == 'subscription'
+        assert data['managed_payments[enabled]'] == 'false'
         assert data['line_items[0][price]'] == 'price_family'
         assert data['line_items[0][quantity]'] == '1'
         state['checkouts'].append(data)

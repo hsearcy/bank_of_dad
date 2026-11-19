@@ -504,6 +504,8 @@ class FamilyBilling:
             write(lambda c: c.execute('UPDATE _bod_billing SET attempt=? WHERE singleton=1', (attempt,)))
             checkout = await stripe.api('POST', 'checkout/sessions', {
                 'mode': 'subscription', 'customer': customer, 'line_items[0][price]': stripe.price,
+                # Keep this session on ordinary Stripe Payments, regardless of account default.
+                'managed_payments[enabled]': 'false',
                 'line_items[0][quantity]': 1, 'success_url': str(self.env.BOD_PUBLIC_ORIGIN) + '/billing',
                 'cancel_url': str(self.env.BOD_PUBLIC_ORIGIN) + '/billing'}, key='bod-checkout-' + family['id'] + '-' + attempt)
             url = stripe.hosted_url(checkout)
