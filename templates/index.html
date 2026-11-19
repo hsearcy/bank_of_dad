@@ -28,10 +28,11 @@
   <div id="dadPanel" class="panel hidden">
     <div class="panel-card">
       <h2 id="parentPanelTitle">👨‍👧 Dad Controls</h2>
-      <form id="parentLabelForm">
+      <div class="name-display" id="parentNameDisplay"><span id="parentNameValue">Dad</span><button id="editParentName" class="name-icon" type="button" aria-label="Edit parent name" title="Edit parent name">✏️</button></div>
+      <form id="parentLabelForm" class="name-editor" hidden>
         <label for="parentLabel">Parent name or label</label>
         <p id="parentLabelHelp" class="account-note">For example: Mom, Papa, Alex. Up to 40 characters.</p>
-        <div class="row"><input id="parentLabel" aria-describedby="parentLabelHelp" required><button type="submit" class="go">Save name</button></div>
+        <div class="row"><input id="parentLabel" aria-describedby="parentLabelHelp" required><button type="submit" class="go">Save name</button><button id="cancelParentName" type="button">Cancel</button></div>
         <p id="parentLabelStatus" role="status"></p>
       </form>
       <section class="device-controls" aria-label="This screen">
@@ -39,7 +40,7 @@
           <label class="awake-toggle"><input id="keepAwake" type="checkbox" role="switch" aria-describedby="awakeHelp awakeStatus"> Keep screen awake</label>
           <button id="replayTour" class="account-text-button" type="button">Quick tour</button>
         </div>
-        <p id="awakeStatus" role="status">Off</p>
+        <p id="awakeStatus" role="status"></p>
         <p id="awakeHelp" class="account-note">While this page is visible. Resets on reload.</p>
       </section>
       {% if hosted_account is defined %}
@@ -125,7 +126,7 @@
 
   <aside id="productTour" class="product-tour" aria-label="Quick product tour" hidden>
     <h2 id="tourTitle" tabindex="-1" aria-live="polite"></h2>
-    <p id="tourText"></p>
+    <div id="tourText"></div>
     <div class="tour-actions">
       <button id="tourSkip" type="button">Skip tour</button>
       <button id="tourNext" type="button">Show me around</button>

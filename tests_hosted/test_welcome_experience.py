@@ -166,14 +166,16 @@ def test_hosted_awake_control_and_skip_offer(browser_bank, width, controlled):
     if controlled or page.evaluate('!!navigator.wakeLock?.request'):
         toggle.focus()
         page.keyboard.press('Space')
-        api.expect(page.locator('#awakeStatus')).to_contain_text('Active')
+        api.expect(page.locator('#awakeStatus')).to_have_text('')
+        api.expect(page.locator('#awakeStatus')).not_to_be_visible()
         print(f'Hosted Chromium wake lock ({width}px, controlled={controlled}): ' + page.locator('#awakeStatus').inner_text())
         page.locator('#closeDad').click()  # Keep working after closing controls.
         if controlled:
             assert page.evaluate('__wake.locks.filter(lock => !lock.released).length') == 1
         open_parent(page)
         toggle.uncheck()
-        api.expect(page.locator('#awakeStatus')).to_have_text('Off')
+        api.expect(page.locator('#awakeStatus')).to_have_text('')
+        api.expect(page.locator('#awakeStatus')).not_to_be_visible()
     else:
         api.expect(toggle).to_be_disabled()
     assert snapshot(host, family) == before

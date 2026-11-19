@@ -39,17 +39,25 @@ def exercise_wallet(a, b, post, state, prefix):
         expect(page.locator('.wallet-value').first).to_have_text(money(wallet))
         expect(page.locator('.total .big').first).to_have_text(money(total))
         assert not re.search(r'\bcoins?\b', page.locator('body').inner_text(), re.I)
-        assert page.locator('.wallet .btn-spend').count() == page.locator('#kids .card').count()
+        assert page.locator('.wallet .btn-spend').count() == 0
+        assert page.locator('.btn-spend').count() == page.locator('#kids .card').count()
         assert page.locator('.wallet-actions button').count() == 4 * page.locator('#kids .card').count()
 
     shots = os.environ.get('BOD_WALLET_SCREENSHOTS')
-    for page, width, label in ((a, 390, 'phone'), (b, 1440, 'desktop')):
+    for page, width, label in ((a, 390, 'phone'), (b, 1280, 'desktop')):
         page.set_viewport_size({'width': width, 'height': 900})
         check(page, 934, 1234)
         expect(page.locator('.wallet').first).to_have_accessible_name("Synthetic's wallet")
-        expect(page.get_by_role('button', name="Spend from Synthetic's wallet")).to_be_visible()
-        assert page.locator('.wallet-value').first.evaluate('(e) => parseFloat(getComputedStyle(e).fontSize)') >= 30
-        assert page.locator('.total .big').first.evaluate('(e) => parseFloat(getComputedStyle(e).fontSize)') > 30
+        expect(page.get_by_role('button', name='Spend', exact=True)).to_be_visible()
+        wallet_font = page.locator('.wallet-value').first.evaluate('(e) => parseFloat(getComputedStyle(e).fontSize)')
+        assert wallet_font >= 24
+        assert page.locator('.total .big').first.evaluate('(e) => parseFloat(getComputedStyle(e).fontSize)') > wallet_font
+        assert page.locator('.wallet').first.bounding_box()['height'] <= 56
+        for button in page.locator('.wallet-actions button').all():
+            assert button.bounding_box()['height'] >= 44
+            assert button.bounding_box()['width'] >= 44
+            button.focus()
+            expect(button).to_be_focused()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert page.locator('.btn-spend').first.bounding_box()['height'] >= 44
         if shots:
@@ -79,6 +87,7 @@ def exercise_wallet(a, b, post, state, prefix):
     action('/api/admin/kid/update', name='Alexandertheverylongname')
     for page in (a, b):
         expect(page.locator('.wallet').first).to_have_accessible_name("Alexandertheverylongname's wallet")
+        assert page.locator('.wallet').first.bounding_box()['height'] <= 56
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
 
     # No polling: a replacement WebSocket must reconcile the missed write.

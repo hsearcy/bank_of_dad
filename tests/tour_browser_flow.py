@@ -9,6 +9,7 @@ def save_and_finish_tour(page, width):
     for _ in range(3):
         page.locator('#tourNext').click()
     expect(page.locator('#tourTitle')).to_contain_text('Give saving a try')
+    expect(page.locator('#tourText')).to_have_text('Move money from the wallet into savings, or take savings out again. You choose the amount.')
     title = page.locator('#tourTitle').inner_text()
     page.locator('.btn-save').first.click()
     expect(page.locator('#modal')).to_be_visible()
@@ -43,7 +44,12 @@ def save_and_finish_tour(page, width):
     page.wait_for_function('document.querySelector(".btn-save").classList.contains("tour-target")')
     page.locator('#tourNext').click()
     page.locator('#tourNext').click()
-    expect(page.locator('#tourTitle')).to_contain_text('Four tools below the graph')
+    expect(page.locator('#tourTitle')).to_contain_text('Additional tools')
+    expect(page.locator('#tourText li')).to_have_count(4)
+    for row, icon, label in zip(page.locator('#tourText li').all(), ('💸', '🔮', '📜', '⛶'), ('Spend', 'What if', 'History', 'Expand graph')):
+        expect(row).to_contain_text(icon)
+        expect(row.locator('b')).to_have_text(label)
+    expect(page.locator('#tourText')).not_to_contain_text('Try any tool')
     controls = page.locator('.wallet-actions.tour-target')
     expect(controls).to_have_count(1)
     for selector in ('.btn-spend', '.btn-whatif', '.btn-history', '.btn-expand'):
@@ -70,7 +76,9 @@ def save_and_finish_tour(page, width):
     page.locator('#tourNext').click()
     expect(page.locator('#tourTitle')).to_contain_text('A few things to know')
     text = page.locator('#tourText').inner_text()
-    for phrase in ('not a real bank', 'own kids', 'always-on', 'claim', 'VERY HIGH', 'parent dashboard', 'default', 'optional automatic'):
+    assert 'I made this to track real balances for my own kids.' in text
+    assert 'founder' not in text
+    for phrase in ('not a real bank', 'own kids', 'always-on', 'VERY HIGH', 'parent dashboard', 'default', 'optional automatic'):
         assert phrase in text
     if page.evaluate('STATE.config.auto_interest_enabled'):
         assert 'Automatic savings interest is on' in text
