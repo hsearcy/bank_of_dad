@@ -47,7 +47,8 @@ def hosted_app(tmp_path, monkeypatch, request):
     key = RSAKey.generate_key(2048, parameters={'kid': 'one'})
     state = {'subject': 'parent-a', 'claims': {}, 'codes': {}, 'customers': [],
              'checkouts': [], 'portals': [], 'subscriptions': {}, 'token_calls': 0,
-             'subscription_calls': 0, 'fail': False, 'price_amount': 999}
+             'subscription_calls': 0, 'fail': False, 'price_amount': 999, 'checkout_objects': {},
+             'checkout_keys': {}, 'lose_checkout': False}
     state['key'] = key
 
     @provider.get('/.well-known/openid-configuration')
@@ -119,9 +120,36 @@ def hosted_app(tmp_path, monkeypatch, request):
         assert data['managed_payments[enabled]'] == 'false'
         assert data['line_items[0][price]'] == 'price_family'
         assert data['line_items[0][quantity]'] == '1'
+        key = flask_request.headers['Idempotency-Key']
+        if key in state['checkout_keys']:
+            old, obj = state['checkout_keys'][key]
+            if old != data:
+                return jsonify(error={'type': 'idempotency_error', 'message': 'Parameters changed'}), 409
+            return jsonify(obj)
         state['checkouts'].append(data)
-        return jsonify(id='cs_' + str(len(state['checkouts'])), object='checkout.session',
-                       url='https://checkout.stripe.com/c/pay/synthetic', expires_at=int(time.time()) + 86400)
+        obj = dict(id='cs_' + str(len(state['checkouts'])), object='checkout.session',
+                   customer=data['customer'], livemode=False, mode='subscription', status='open',
+                   created=int(time.time()), metadata={'bod_attempt': data['metadata[bod_attempt]']},
+                   url='https://checkout.stripe.com/c/pay/synthetic', expires_at=int(time.time()) + 86400)
+        state['checkout_objects'][obj['id']] = obj
+        state['checkout_keys'][key] = (data, obj)
+        if state['lose_checkout']:
+            state['lose_checkout'] = False
+            return jsonify(error={'type': 'api_error', 'message': 'Response lost'}), 503
+        return jsonify(obj)
+
+    @provider.get('/v1/checkout/sessions')
+    def list_checkout():
+        state.setdefault('checkout_list_calls', []).append(dict(flask_request.args))
+        if state.get('fail_checkout_list'):
+            return jsonify(error={'type': 'api_error', 'message': 'Synthetic outage'}), 503
+        rows = [s for s in state['checkout_objects'].values() if s['customer'] == flask_request.args['customer']]
+        cursor = flask_request.args.get('starting_after')
+        if cursor:
+            rows = rows[next(i for i, s in enumerate(rows) if s['id'] == cursor) + 1:]
+        size = state.get('checkout_page_size', 100)
+        page = rows[:size]
+        return jsonify(object='list', data=page, has_more=len(rows) > size, url='/v1/checkout/sessions')
 
     @provider.post('/v1/billing_portal/sessions')
     def portal():
@@ -130,9 +158,9 @@ def hosted_app(tmp_path, monkeypatch, request):
 
     @provider.get('/v1/checkout/sessions/<checkout_id>')
     def retrieve_checkout(checkout_id):
-        return jsonify(id=checkout_id, object='checkout.session', status=state.get('checkout_status', 'open'),
-                       subscription='sub_synthetic',
-                       url='https://checkout.stripe.com/c/pay/synthetic')
+        obj = dict(state['checkout_objects'][checkout_id])
+        obj.update(status=state.get('checkout_status', obj['status']), subscription='sub_synthetic')
+        return jsonify(obj)
 
     @provider.get('/v1/subscriptions/sub_synthetic')
     def retrieve_subscription():

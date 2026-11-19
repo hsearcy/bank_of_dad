@@ -6,6 +6,7 @@ until claimed. Email is neither stored nor an identity key.
 """
 import hashlib
 import hmac
+import json
 import os
 from pathlib import Path
 import re
@@ -145,6 +146,8 @@ class Hosted:
                 );
             ''')
             migrate(conn)
+            if 'checkout_attempt' not in {r[1] for r in conn.execute('PRAGMA table_info(families)')}:
+                conn.execute('ALTER TABLE families ADD COLUMN checkout_attempt TEXT')
             columns = {row[1] for row in conn.execute('PRAGMA table_info(families)')}
             if 'guest_hash' not in columns:
                 conn.execute('ALTER TABLE families ADD COLUMN guest_hash TEXT')
@@ -471,7 +474,7 @@ class Hosted:
         if not family['customer']:
             customer = self.stripe.v1.customers.create(
                 {}, options={'idempotency_key': 'bod-customer-' + family['id']})
-            conn.execute('UPDATE families SET customer=? WHERE id=?', (customer.id, family['id']))
+            conn.execute("UPDATE families SET customer=?,checkout_attempt='ready' WHERE id=?", (customer.id, family['id']))
             return customer.id
         return family['customer']
 
@@ -525,29 +528,93 @@ class Hosted:
                         'customer': customer, 'return_url': self.origin + '/billing'})
                     return redirect(portal.url, code=303)
                 family = conn.execute('SELECT * FROM families WHERE customer=?', (customer,)).fetchone()
-                if family['checkout_expires'] and family['checkout_expires'] > time.time() + 60:
-                    existing = self.stripe.v1.checkout.sessions.retrieve(family['checkout_id'])
-                    if existing.status == 'open':
-                        return redirect(existing.url, code=303)
-                    if existing.status == 'complete':
-                        prior = self.stripe.v1.subscriptions.retrieve(existing.subscription)
+                recovery = ('Checkout recovery is required. Contact support from Family access '
+                            'and include your Family ID; do not start another payment.', 503)
+                if family['checkout_id']:
+                    existing = self.stripe.v1.checkout.sessions.retrieve(family['checkout_id']).to_dict()
+                    if (existing.get('customer') != customer or existing.get('livemode') is not self.live
+                            or existing.get('mode') != 'subscription'):
+                        return recovery
+                    if existing['status'] == 'open':
+                        return redirect(existing['url'], code=303)
+                    if existing['status'] == 'complete':
+                        prior = self.stripe.v1.subscriptions.retrieve(existing['subscription'])
                         if prior.status not in ('canceled', 'incomplete_expired'):
                             portal = self.stripe.v1.billing_portal.sessions.create({
                                 'customer': customer, 'return_url': self.origin + '/billing'})
                             return redirect(portal.url, code=303)
-                # Stable per time window for retry after an uncertain API response.
-                window = int(time.time() // 1800)
-                checkout = self.stripe.v1.checkout.sessions.create({
-                    'mode': 'subscription', 'customer': customer,
-                    # Explicit session opt-out; never change account-wide payment policy.
-                    'managed_payments': {'enabled': False},
-                    'line_items': [{'price': self.price, 'quantity': 1}],
-                    'success_url': self.origin + '/billing', 'cancel_url': self.origin + '/billing',
-                    'client_reference_id': family['id'],
-                }, options={'idempotency_key': 'bod-checkout-' + family['id'] + '-' + str(family['checkout_id']) + '-' + str(window)})
-                conn.execute('UPDATE families SET checkout_id=?, checkout_url=?, checkout_expires=? WHERE id=?',
-                             (checkout.id, checkout.url, checkout.expires_at, family['id']))
-            return redirect(checkout.url, code=303)
+                    elif existing['status'] != 'expired':
+                        return recovery
+                raw = family['checkout_attempt']
+                attempt, checkout = None, None
+                # Key rotation/account changes must never silently relabel an attempt.
+                scope = hashlib.sha256((os.environ['BOD_STRIPE_SECRET_KEY'] + '|' + str(self.live)
+                                       + '|' + self.price).encode()).hexdigest()
+                if raw not in (None, 'ready'):
+                    attempt = json.loads(raw)
+                    if attempt['scope'] != scope or attempt['values']['customer'] != customer:
+                        return recovery
+                # A saved legacy ID may predate a replacement whose response
+                # was lost. It does not resolve a NULL attempt's ambiguity.
+                if attempt or raw is None:
+                    query = {'customer': customer, 'limit': 100}
+                    if attempt:
+                        query['created'] = {'gte': int(attempt['created']) - 60}
+                    candidates = []
+                    for item in self.stripe.v1.checkout.sessions.list(query).auto_paging_iter():
+                        item = item.to_dict()
+                        if item.get('customer') != customer or item.get('livemode') is not self.live:
+                            return recovery
+                        if item.get('mode') != 'subscription':
+                            continue
+                        matches = attempt and item.get('metadata', {}).get('bod_attempt') == attempt['nonce']
+                        if not matches:
+                            if item.get('status') == 'expired':
+                                continue
+                            return recovery  # old time-window attempts cannot be safely identified
+                        # Expiry is evidence that this exact request is terminal,
+                        # not absence of evidence. Never replay its cached key.
+                        candidates.append(item)
+                    if len(candidates) > 1:
+                        return recovery
+                    if candidates:
+                        checkout = candidates[0]
+                        if checkout.get('status') == 'expired':
+                            attempt, checkout = None, None
+                        elif checkout.get('status') == 'complete':
+                            conn.execute("UPDATE families SET checkout_id=?,checkout_expires=?,checkout_attempt='ready' WHERE id=?",
+                                         (checkout['id'], checkout['expires_at'], family['id']))
+                            portal = self.stripe.v1.billing_portal.sessions.create({
+                                'customer': customer, 'return_url': self.origin + '/billing'})
+                            return redirect(portal.url, code=303)
+                        elif checkout.get('status') != 'open':
+                            return recovery
+                    elif not attempt or not 0 <= time.time() - attempt['created'] < 23 * 3600:
+                        return recovery
+                if not checkout:
+                    if not attempt:
+                        nonce = secrets.token_hex(16)
+                        attempt = dict(scope=scope, version='2025-03-31.basil', created=time.time(), nonce=nonce,
+                            key='bod-checkout-v2-' + family['id'] + '-' + nonce, values={
+                                'mode': 'subscription', 'customer': customer,
+                                'managed_payments': {'enabled': False},
+                                'line_items': [{'price': self.price, 'quantity': 1}],
+                                'success_url': self.origin + '/billing', 'cancel_url': self.origin + '/billing',
+                                'client_reference_id': family['id'],
+                                'metadata': {'bod_attempt': nonce, 'bod_family': family['id']}})
+                        conn.execute('UPDATE families SET checkout_attempt=? WHERE id=?',
+                                     (json.dumps(attempt, sort_keys=True), family['id']))
+                        # A rollback after an ambiguous POST must not erase its identity.
+                        conn.commit()
+                        conn.execute('BEGIN IMMEDIATE')
+                    checkout = self.stripe.v1.checkout.sessions.create(attempt['values'],
+                        options={'idempotency_key': attempt['key'], 'stripe_version': attempt['version']}).to_dict()
+                if (checkout.get('customer') != customer or checkout.get('livemode') is not self.live
+                        or checkout.get('mode') != 'subscription' or checkout.get('status') != 'open'):
+                    return recovery
+                conn.execute("UPDATE families SET checkout_id=?, checkout_url=?, checkout_expires=?,checkout_attempt='ready' WHERE id=?",
+                             (checkout['id'], checkout['url'], checkout['expires_at'], family['id']))
+            return redirect(checkout['url'], code=303)
         except self.stripe_module.StripeError:
             return 'Billing is temporarily unavailable. Please try again.', 503
 

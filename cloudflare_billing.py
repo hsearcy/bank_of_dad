@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS _bod_stripe_events(id TEXT PRIMARY KEY, digest TEXT N
 '''
 
 
+class CheckoutRecoveryRequired(ValueError):
+    pass
+
+
 class Stripe:
     def __init__(self, env):
         public = runtime_mode(env) == 'public'
@@ -133,6 +137,52 @@ class Stripe:
                 break
             after = batch[-1]['id']
         raise ValueError('Incomplete Stripe pagination')
+
+    async def recover_checkout(self, customer, family, attempt, origin):
+        # List, not Search: customer-scoped cursor pagination is supported on Basil.
+        # Never filter only 'open': a completed request can already own a subscription.
+        query = {'customer': customer}
+        if attempt:
+            query['created[gte]'] = int(attempt['created']) - 60
+        sessions = await self.pages('checkout/sessions', query)
+        candidates = []
+        for session in sessions:
+            if session.get('customer') != customer or session.get('livemode') is not self.live:
+                raise ValueError('Wrong Checkout customer/mode')
+            if session.get('mode') != 'subscription':
+                continue
+            if session.get('status') == 'expired' and not (attempt and
+                    session.get('metadata', {}).get('bod_attempt') == attempt['nonce']):
+                continue
+            if session.get('status') not in ('open', 'complete', 'expired'):
+                raise CheckoutRecoveryRequired('Unknown Checkout state')
+            if attempt:
+                if (session.get('metadata', {}).get('bod_attempt') != attempt['nonce']
+                        or session.get('metadata', {}).get('bod_family') != family):
+                    raise CheckoutRecoveryRequired('Unrelated pending Checkout')
+            else:
+                # Legacy sessions have no attempt metadata. The server-owned customer
+                # association plus exact original URLs/catalog must identify one only.
+                if (session.get('success_url') != origin + '/billing'
+                        or session.get('cancel_url') != origin + '/billing'):
+                    raise CheckoutRecoveryRequired('Legacy Checkout identity is ambiguous')
+                items = await self.pages('checkout/sessions/' + session['id'] + '/line_items', {})
+                if (len(items) != 1 or items[0].get('quantity') != 1
+                        or items[0].get('price', {}).get('id') != self.price):
+                    raise CheckoutRecoveryRequired('Legacy Checkout catalog is ambiguous')
+            candidates.append(session)
+        if len(candidates) > 1:
+            raise CheckoutRecoveryRequired('Multiple pending Checkouts')
+        if candidates:
+            return candidates[0]
+        if not attempt:
+            # No timestamp/request snapshot exists for legacy attempts. An empty
+            # list is not proof that an old in-flight POST definitively failed.
+            raise CheckoutRecoveryRequired('Legacy attempt needs operator reconciliation')
+        if not 0 <= time.time() - attempt['created'] < 23 * 3600:
+            # Stripe may prune idempotency keys after 24h. Never blindly replay one.
+            raise CheckoutRecoveryRequired('Checkout retry window elapsed')
+        return None
 
     async def invoice_settled(self, invoice, customer):
         # Basil removed invoice.paid/charge/payment_intent. A paid invoice can
@@ -409,6 +459,10 @@ class FamilyBilling:
             result = json.loads(await self.billing(json.dumps(dict(
                 operation=urlsplit(request.url).path.rsplit('/', 1)[-1], token=token))))
             return response(status=303, location=result['location'])
+        except CheckoutRecoveryRequired:
+            return response('Checkout recovery is required before another subscription can be created. '
+                            'Contact support from the Family access page and include your Family ID. '
+                            'Do not start another payment. <a href="/billing">Family access and support</a>', 503)
         except Exception as error:
             print('Stripe billing unavailable:', type(error).__name__)
             return response('Billing is temporarily unavailable. Please try again. <a href="/billing">Back</a>', 503)
@@ -496,9 +550,10 @@ class FamilyBilling:
             saved = self.transact(lambda c: c.execute('SELECT * FROM _bod_billing').fetchone())
             if saved['checkout_id']:
                 previous = await stripe.api('GET', 'checkout/sessions/' + saved['checkout_id'])
-                if previous['customer'] != customer or previous['livemode'] is not stripe.live:
+                if (previous['customer'] != customer or previous['livemode'] is not stripe.live
+                        or previous.get('mode') != 'subscription'):
                     raise ValueError('Wrong Checkout customer/mode')
-                if previous['status'] == 'open' and previous['expires_at'] > time.time() + 60:
+                if previous['status'] == 'open':
                     return json.dumps({'location': stripe.hosted_url(previous)})
                 if previous['status'] == 'complete':
                     sub = await stripe.api('GET', 'subscriptions/' + previous['subscription'])
@@ -506,18 +561,43 @@ class FamilyBilling:
                         raise ValueError('Wrong subscription customer/mode')
                     if sub['status'] not in TERMINAL:
                         return json.dumps({'location': stripe.hosted_url(await stripe.portal(customer), portal=True)})
-            # Persist the attempt BEFORE issuing a potentially ambiguous POST.
-            # Retry an uncertain creation with exactly the same idempotency key.
-            attempt = saved['attempt'] or secrets.token_hex(16)
-            write(lambda c: c.execute('UPDATE _bod_billing SET attempt=? WHERE singleton=1', (attempt,)))
-            checkout = await stripe.api('POST', 'checkout/sessions', {
-                'mode': 'subscription', 'customer': customer, 'line_items[0][price]': stripe.price,
-                # Keep this session on ordinary Stripe Payments, regardless of account default.
-                'managed_payments[enabled]': 'false',
-                'line_items[0][quantity]': 1, 'success_url': str(self.env.BOD_PUBLIC_ORIGIN) + '/billing',
-                'cancel_url': str(self.env.BOD_PUBLIC_ORIGIN) + '/billing'}, key='bod-checkout-' + family['id'] + '-' + attempt)
+            if saved['checkout_id'] and previous['status'] not in ('open', 'complete', 'expired'):
+                raise CheckoutRecoveryRequired('Unknown saved Checkout state')
+            origin = str(self.env.BOD_PUBLIC_ORIGIN)
+            attempt, checkout = None, None
+            if saved['attempt']:
+                if saved['attempt'].startswith('{'):
+                    attempt = json.loads(saved['attempt'])
+                    if (attempt['version'] != VERSION or attempt['scope'] != stripe.scope
+                            or attempt['values']['customer'] != customer):
+                        raise CheckoutRecoveryRequired('Checkout request scope changed')
+                checkout = await stripe.recover_checkout(customer, family['id'], attempt, origin)
+                if checkout:
+                    write(lambda c: c.execute('UPDATE _bod_billing SET checkout_id=?,checkout_expires=?,attempt=NULL WHERE singleton=1',
+                                              (checkout['id'], checkout['expires_at'])))
+                if checkout and checkout['status'] == 'expired':
+                    attempt, checkout = None, None
+                if checkout and checkout['status'] == 'complete':
+                    # A completion may race the subscription snapshot; never create again.
+                    return json.dumps({'location': stripe.hosted_url(await stripe.portal(customer), portal=True)})
+            if not checkout:
+                if not attempt:
+                    nonce = secrets.token_hex(16)
+                    values = {
+                        'mode': 'subscription', 'customer': customer, 'line_items[0][price]': stripe.price,
+                        'managed_payments[enabled]': 'false', 'line_items[0][quantity]': 1,
+                        'success_url': origin + '/billing', 'cancel_url': origin + '/billing',
+                        'metadata[bod_attempt]': nonce, 'metadata[bod_family]': family['id']}
+                    attempt = dict(version=VERSION, scope=stripe.scope, created=time.time(), nonce=nonce,
+                        key='bod-checkout-v2-' + family['id'] + '-' + nonce, values=values)
+                    # Persist the full immutable request BEFORE a potentially ambiguous POST.
+                    write(lambda c: c.execute('UPDATE _bod_billing SET attempt=? WHERE singleton=1',
+                                              (json.dumps(attempt, sort_keys=True),)))
+                checkout = await stripe.api('POST', 'checkout/sessions', attempt['values'], key=attempt['key'])
             url = stripe.hosted_url(checkout)
-            if checkout['customer'] != customer or checkout['livemode'] is not stripe.live:
+            if (checkout['customer'] != customer or checkout['livemode'] is not stripe.live
+                    or checkout.get('mode') != 'subscription' or checkout.get('status') != 'open'
+                    or checkout.get('expires_at', 0) <= time.time()):
                 raise ValueError('Wrong Checkout customer/mode')
             write(lambda c: c.execute('UPDATE _bod_billing SET checkout_id=?,checkout_expires=?,attempt=NULL WHERE singleton=1',
                                       (checkout['id'], checkout['expires_at'])))
