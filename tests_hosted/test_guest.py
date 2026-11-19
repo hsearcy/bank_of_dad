@@ -86,7 +86,7 @@ def test_retained_guest_token_can_claim_after_day_30_without_resetting_trial(hos
     a = app.test_client()
     created = time.time() - age_days * 86400
     # Create through the real provisioning path in the past, then use today's
-    # actual provider/clock. Only the approved first seven days grant access.
+    # actual provider/clock. Only the approved first 31 days grant access.
     with monkeypatch.context() as clock:
         clock.setattr(hosted, 'time', SimpleNamespace(time=lambda: created))
         assert call(a, '/', origin).location == '/billing'
@@ -94,7 +94,7 @@ def test_retained_guest_token_can_claim_after_day_30_without_resetting_trial(hos
     family = device['family']
     with host.connect() as conn:
         row = dict(conn.execute('SELECT * FROM families WHERE id=?', (family,)).fetchone())
-        assert row['trial_until'] == created + 7 * 86400
+        assert row['trial_until'] == created + 31 * 86400
         if legacy_session:
             conn.execute('UPDATE families SET guest_expires=? WHERE id=?', (created + 30 * 86400, family))
     if legacy_session:
@@ -240,7 +240,7 @@ def test_device_cookie_survives_trial_and_logout_revokes_capability(hosted_app):
     with host.connect() as conn:
         row = conn.execute('SELECT * FROM families').fetchone()
         assert row['guest_expires'] is None
-        assert row['trial_until'] - row['trial_started'] == 7 * 86400
+        assert row['trial_until'] - row['trial_started'] == 31 * 86400
     assert cookie.expires.year == 9999  # Browser retention is not an app claim deadline.
     with sqlite3.connect(host.root / 'sessions.sqlite') as conn:
         assert conn.execute('SELECT expiry FROM sessions').fetchone()[0] is None

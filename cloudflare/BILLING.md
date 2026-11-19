@@ -27,7 +27,7 @@ private, ignored `cloudflare/.dev.vars` file (not in source or Wrangler `vars`):
 
 Google client configuration is still required for subscribing as a signed-in
 parent. No customer is created by guest onboarding or sign-in. The original
-seven-day no-card trial is not reset or transformed into a Stripe trial.
+31-day no-card trial is not reset or transformed into a Stripe trial.
 Checkout starts payment immediately only after the parent confirms in Stripe.
 
 Use Stripe CLI forwarding to the exact loopback `/billing/webhook` URL for local

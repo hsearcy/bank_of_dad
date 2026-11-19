@@ -39,6 +39,7 @@ META_SCHEMA = '''CREATE TABLE _bod_family (
     singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL CHECK(version=1),
     id TEXT NOT NULL, guest_hash TEXT NOT NULL, csrf TEXT NOT NULL,
     trial_started REAL NOT NULL, trial_until REAL NOT NULL,
+    trial_policy INTEGER NOT NULL DEFAULT 0,
     paid_until REAL NOT NULL DEFAULT 0, free_access INTEGER NOT NULL DEFAULT 0,
     welcome_dismissed INTEGER NOT NULL DEFAULT 0, customer TEXT,
     revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1))
@@ -90,8 +91,8 @@ class FamilyBank(FamilyOwner, FamilyBilling, DurableObject):
             family, capability = token.split('.')
             now = time.time()
             conn.execute('''INSERT INTO _bod_family
-                (singleton,version,id,guest_hash,csrf,trial_started,trial_until)
-                VALUES (1,1,?,?,?,?,?)''',
+                (singleton,version,id,guest_hash,csrf,trial_started,trial_until,trial_policy)
+                VALUES (1,1,?,?,?,?,?,1)''',
                 (family, hashlib.sha256(capability.encode()).hexdigest(), secrets.token_hex(32), now, now + TRIAL_SECONDS))
             create_sample(conn)
         elif not any(row['name'] == '_bod_family' for row in objects):

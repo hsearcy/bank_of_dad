@@ -8,7 +8,7 @@
 {% if hosted_guest %}
 <p class="account-status">Trying on this device</p>
 <p class="account-note guest-warning">Clearing browser data, signing out or switching devices can lose access to this anonymous bank and its progress. Save / sync now to keep all balances, kids, settings and history. Your original trial end date stays the same.</p>
-<p class="account-note">You can still save this bank after the free week ends while this browser keeps its token and the server keeps its data. Browsers can clear or expire stored data, so save / sync for access on other devices.</p>
+<p class="account-note">You can still save this bank after the free trial ends while this browser keeps its token and the server keeps its data. Browsers can clear or expire stored data, so save / sync for access on other devices.</p>
 <a class="account-button account-secondary" href="/auth/login">Save this bank / sign in</a>
 {% elif session.get('device_bank') %}
 <p class="account-note">Your separate device trial is still here. Nothing was imported into this family.</p>
@@ -19,7 +19,7 @@
 {% endif %}
 {% if account.kind == 'trial' %}
 <p class="account-status">{{ account.days_left }} {{ 'day' if account.days_left == 1 else 'days' }} left to try your family bank.</p>
-<p class="account-note">Your free week ends {{ account.until_label }}. No card needed, and no automatic charge when it ends.</p>
+<p class="account-note">Your free trial ends {{ account.until_label }}.</p>
 {% elif account.kind == 'paid' %}
 <p class="account-status">Your family subscription is active.</p>
 <p class="account-note">Access through {{ account.until_label }}. Manage renewal or cancel in Stripe.</p>
@@ -31,8 +31,9 @@
 <p class="account-note">Your family’s bank data is still here. {% if public_pilot|default(false) %}Payments are unavailable; contact support about access.{% else %}Subscribe or contact us about free access to pick up where you left off.{% endif %}</p>
 {% endif %}
 {% if public_pilot|default(false) %}
-<p class="account-note guest-warning"><strong>Private pilot — payments unavailable.</strong> No payment will be taken. Your original 7-day trial still ends on time; access then pauses unless the operator explicitly grants free access. Contact support below. Google sign-in depends on provider availability. Use sample names only while privacy, retention and recovery review is pending.</p>
+<p class="account-note guest-warning"><strong>Private pilot — payments unavailable.</strong> No payment will be taken. Your original 31-day trial still ends on time; access then pauses unless the operator explicitly grants free access. Contact support below. Google sign-in depends on provider availability. Use sample names only while privacy, retention and recovery review is pending.</p>
 {% elif account.kind in ('trial', 'expired') %}
+<p class="account-contribution">I built this just for my own kids, but friends kept asking if they could use it so I finally gave in and put it up here. If you're enjoying it, your small yearly contribution will help me pay server costs and do maintenance.</p>
 <div class="account-price"><strong>$9.99 <span>USD per year</span></strong><small>One subscription for your whole family</small></div>
 {% if not hosted_guest %}
 <form action="/billing/checkout" method="post">
@@ -58,9 +59,10 @@
 {% endif %}
 <div class="account-help">
   <strong>Can’t pay right now?</strong>
-  <p>Cost shouldn’t get in the way of learning about money. Ask about free access for your family.</p>
+  <p>Cost shouldn’t get in the way of learning about money. If you need free access for your family, let me know and we can work something out.</p>
   {% if support_url %}<a href="{{ support_url }}" class="account-contact">Contact about free access <span aria-hidden="true">→</span></a>
   {% else %}<p class="account-note">Ask the person who runs this Bank of Dad. A contact link hasn’t been set up yet.</p>{% endif %}
+  <p>Please include your Family ID when you get in touch.</p>
   <small class="family-reference">Family ID: <code>{{ hosted_family.id }}</code></small>
 </div>
-<p class="account-note">{% if not public_pilot|default(false) %}The price just helps cover the server. {% endif %} <a href="https://github.com/hsearcy/bank_of_dad" target="_blank" rel="noopener noreferrer">Self-host Bank of Dad for free ↗</a></p>
+<p class="account-note account-open-source">The Bank of Dad is also Open Source if you want to <a href="https://github.com/hsearcy/bank_of_dad" target="_blank" rel="noopener noreferrer">run it yourself for free</a>!</p>

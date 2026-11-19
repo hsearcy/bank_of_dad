@@ -71,7 +71,7 @@ def test_welcome_tour_real_targets_claim_reload_and_keyboard(browser_bank, width
     welcome = page.locator('#guestWelcome')
     api.expect(welcome).to_be_visible()
     api.expect(welcome).to_contain_text('keep the lights on')
-    api.expect(welcome).to_contain_text('7 days')
+    api.expect(welcome).to_contain_text('31 days')
     api.expect(welcome).to_contain_text('No automatic charge')
     api.expect(welcome).to_contain_text('not required')
     api.expect(welcome).to_contain_text('my kids')

@@ -24,7 +24,7 @@ were changed. No paid plan is required or purchased by this change.
 - Production configuration is deliberately **disabled by default**:
   `BOD_PUBLIC_PILOT=false`. An approved pilot requires an explicit change to
   `true` and `BOD_BILLING_MODE=unavailable`. This is not permanent free access;
-  the original seven-day trial expires normally, and only separately audited
+  the original 31-day trial expires normally, and only separately audited
   owner grants can extend access. Onboarding/Dad/billing disclose this before
   users start. This label does not provide access control: anyone with the URL
   can reach an enabled pilot. Use disposable/sample data until release gates pass.

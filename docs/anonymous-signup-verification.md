@@ -5,7 +5,7 @@
 - Guest login startup no longer revokes the SID/CSRF used by the still-open dashboard. The verified callback still rotates both, revokes the guest capability, and consumes browser-bound OAuth state once. Ordinary authenticated login keeps its existing reset behavior.
 - A stale HTTP 401 hides the old document and rechecks the current browser cookie before initiating OIDC. Successful recovery reloads the document and CSRF; it never replays a mutation.
 - Guest capability and server-session recovery have no application deadline. Persistent cookies remain subject to browser retention. Retained legacy guest sessions are upgraded before expired-session cleanup; authenticated session expiry remains unchanged.
-- Seven-day trial timestamps are not reset by signup. Expired access remains blocked until a subscription or operator grant applies.
+- 31-day trial timestamps are not reset by signup. Expired access remains blocked until a subscription or operator grant applies.
 
 Before the fix, the new Chromium regression observed four authorization starts during the deliberately held startup, rather than one. After the fix it verifies one real Authlib/OIDC flow, an existing WSS connection with polling disabled, a committed gift and pushed refresh during startup, ordinary tab reload, session rotation, a genuine stale revoked-SID 401, and exact preservation of all bank tables and ID sequences. It runs at 390px and 1280px.
 

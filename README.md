@@ -90,10 +90,10 @@ are carried in notifications. See [HOSTED.md](HOSTED.md) for operational limits.
 ## Optional hosted families and subscriptions
 
 An opt-in hosted mode opens straight into a working sample family bank for a
-**7-day trial with no sign-up or card required**. Changes persist for that browser.
+**31-day trial with no sign-up or card required**. Changes persist for that browser.
 Optional parent sign-in saves/syncs the entire bank without resetting the trial;
 clearing browser data or switching devices can lose anonymous access. After the
-week, subscribe for **$9.99 USD/year per family** or ask for free access. Nothing
+trial, subscribe for **$9.99 USD/year per family** or ask for free access. Nothing
 is charged automatically. Separate family SQLite files and Stripe-hosted
 Checkout/customer portal handle signed-in subscriptions.
 Save/sync, subscription and sign-out live in Dad controls; operators can grant durable free

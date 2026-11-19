@@ -126,12 +126,15 @@ def test_workerd_public_bank_cookies_host_origin_and_trial(public):
     billing = public.call('/billing', cookie=cookie)[1]
     assert 'payments unavailable' in billing
     assert 'action="/billing/checkout"' not in billing
-    assert public.call('/billing/checkout', cookie=cookie, csrf=csrf, body={})[0] == 503
+    code, unavailable, _ = public.call('/billing/checkout', cookie=cookie, csrf=csrf, body={})
+    assert code == 503
+    assert 'original 31-day trial' in unavailable
+    assert 'seven-day' not in unavailable and '7-day' not in unavailable
     assert public.call('/billing/webhook', origin=False, body={})[0] == 503
     path = public.database(cookie)
     with sqlite3.connect(path) as c:
         started, until, free = c.execute('SELECT trial_started,trial_until,free_access FROM _bod_family').fetchone()
-        assert until - started == 7 * 86400 and free == 0
+        assert until - started == 31 * 86400 and free == 0
     with httpx.Client(base_url=public.origin, verify=False) as c:
         result = c.post('/auth/logout', headers={'Host': 'thebankofdad.app', 'Origin': PUBLIC,
             'CF-Connecting-IP': '192.0.2.42', 'Cookie': cookie, 'X-CSRF-Token': csrf})
