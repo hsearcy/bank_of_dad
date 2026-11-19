@@ -40,6 +40,18 @@ class ExperienceBrowserBase(test_realtime.AppServerCase):
 
 
 class ExperienceBrowserTests(ExperienceBrowserBase):
+    def test_founder_story_and_tour_return_without_mutation(self):
+        from about_story_ui import check_about_story
+        self.assertTrue(self.post('/api/admin/label', {'parent_label': 'Mom'})['ok'])
+        for width in (390, 1280):
+            page = self.page(width=width, height=667)
+            page.locator('#closeDad').click()
+            before = self.bank_snapshot()
+            check_about_story(page, width)
+            self.assertEqual('Mom', page.evaluate('parentName()'))
+            self.assertIn('I give my kids', page.locator('#aboutDialog').text_content())
+            self.assertEqual(before, self.bank_snapshot())
+
     def test_real_save_keeps_tour_and_finishes_information(self):
         from tour_browser_flow import save_and_finish_tour
         for width in (390, 1280):

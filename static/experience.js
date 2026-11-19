@@ -4,7 +4,7 @@ const BodExperience = (() => {
   const find = selector => document.querySelector(selector);
   let tour, step = -1, target = null, describedBy = null, returnFocus = null;
   let steps = [];
-  let paused = false;
+  let paused = false, panelReturnFocus = null;
   const allSteps = [
     ['#dadBtn', 'Your parent dashboard', 'Open the parent controls to add your kids, give money, set allowance and adjust rates. You can also save / sync a hosted bank there.'],
     [() => find('.reward-btn[data-kind="interest"]') || find('.btn-save'), 'Collect a little growth', 'Tap Savings Interest when it’s ready. It goes back into savings, so future interest can earn interest too.'],
@@ -51,6 +51,7 @@ const BodExperience = (() => {
     clearTarget();
     if (tour.hidden || paused || step < 0) return;
     const item = steps[step];
+    const storyFocused = document.activeElement?.matches('.tour-story-link');
     target = stepTarget(item);
     find('#tourText').textContent = target || !item[0]
       ? stepText(item, target)
@@ -71,6 +72,19 @@ const BodExperience = (() => {
         list.append(row);
       }
       find('#tourText').replaceChildren(list);
+    }
+    if (item === allSteps[5]) {
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.className = 'account-text-button tour-story-link';
+      link.textContent = 'How I use it with my kids';
+      link.dataset.infoDialog = 'aboutDialog';
+      link.dataset.infoSection = 'howIUseIt';
+      link.setAttribute('aria-haspopup', 'dialog');
+      link.setAttribute('aria-controls', 'aboutDialog');
+      link.addEventListener('click', () => { panelReturnFocus = link; });
+      find('#tourText').append(document.createElement('br'), link);
+      if (storyFocused) link.focus({preventScroll: true});
     }
     sizeTour();
     if (!target) return;
@@ -105,8 +119,11 @@ const BodExperience = (() => {
       clearTarget();
     } else {
       tour.removeAttribute('aria-hidden');
+      const restoreStory = panelReturnFocus !== null;
+      panelReturnFocus = null;
       point(true);
-      find('#tourTitle').focus({preventScroll: true});
+      (restoreStory ? find('.tour-story-link') : null)?.focus({preventScroll: true});
+      if (!restoreStory) find('#tourTitle').focus({preventScroll: true});
     }
   }
   function closeTour(restoreFocus = true) {
