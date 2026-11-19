@@ -28,9 +28,11 @@
 <p class="account-note">There is no charge for this access.{% if hosted_family.customer %} An existing Stripe subscription is separate; manage or cancel it below.{% endif %}</p>
 {% else %}
 <p class="account-status">Your free trial or paid access has ended.</p>
-<p class="account-note">Your family’s bank data is still here. Subscribe or contact us about free access to pick up where you left off.</p>
+<p class="account-note">Your family’s bank data is still here. {% if public_pilot|default(false) %}Payments are unavailable; contact support about access.{% else %}Subscribe or contact us about free access to pick up where you left off.{% endif %}</p>
 {% endif %}
-{% if account.kind in ('trial', 'expired') %}
+{% if public_pilot|default(false) %}
+<p class="account-note guest-warning"><strong>Private pilot — payments unavailable.</strong> No payment will be taken. Your original 7-day trial still ends on time; access then pauses unless the operator explicitly grants free access. Contact support below. Google sign-in depends on provider availability. Use sample names only while privacy, retention and recovery review is pending.</p>
+{% elif account.kind in ('trial', 'expired') %}
 <div class="account-price"><strong>$9.99 <span>USD per year</span></strong><small>One subscription for your whole family</small></div>
 {% if not hosted_guest %}
 <form action="/billing/checkout" method="post">
@@ -42,7 +44,7 @@
 {% endif %}
 <p class="account-note">Subscribe only when you choose. Checkout starts a paid annual subscription; Stripe shows the charge and renewal terms before you confirm.</p>
 {% endif %}
-{% if hosted_family.customer %}
+{% if hosted_family.customer and not public_pilot|default(false) %}
 <div class="account-actions">
   <form action="/billing/portal" method="post">
     <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
@@ -61,4 +63,4 @@
   {% else %}<p class="account-note">Ask the person who runs this Bank of Dad. A contact link hasn’t been set up yet.</p>{% endif %}
   <small class="family-reference">Family ID: <code>{{ hosted_family.id }}</code></small>
 </div>
-<p class="account-note">The price just helps cover the server. <a href="https://github.com/hsearcy/bank_of_dad" target="_blank" rel="noopener noreferrer">Self-host Bank of Dad for free ↗</a></p>
+<p class="account-note">{% if not public_pilot|default(false) %}The price just helps cover the server. {% endif %} <a href="https://github.com/hsearcy/bank_of_dad" target="_blank" rel="noopener noreferrer">Self-host Bank of Dad for free ↗</a></p>

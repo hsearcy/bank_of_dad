@@ -56,8 +56,8 @@ def access_status(row, now=None):
             'until_label': datetime.fromtimestamp(until, timezone.utc).strftime('%b %d, %Y at %H:%M UTC') if until else None}
 
 
-def support_destination():
-    value = os.environ.get('BOD_SUPPORT_URL', '')
+def support_destination(value=None):
+    value = os.environ.get('BOD_SUPPORT_URL', '') if value is None else value
     if not value:
         return None
     parsed = urlsplit(value)

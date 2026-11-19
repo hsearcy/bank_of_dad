@@ -20,3 +20,15 @@ deploy/*.env
 *.sqlite3
 *.db
 *.db-*
+
+# Cloudflare local toolchain and disposable state
+node_modules/
+.wrangler/
+.pywrangler/
+.dev.vars
+.dev.vars.*
+.workers/
+.venv-workers/
+python_modules/
+/cloudflare_templates.py
+/cloudflare/build/

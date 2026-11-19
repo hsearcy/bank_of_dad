@@ -79,7 +79,14 @@ CREATE TABLE IF NOT EXISTS settings (
 def get_conn(path=None):
     hosted_request = False
     if path is None:
-        from flask import g, has_request_context
+        from flask import g, has_request_context, request
+        if os.environ.get('BANK_OF_DAD_MODE') == 'cloudflare':
+            # Only the authenticated, transaction-scoped Durable Object request
+            # can supply this connection. Never fall back to ephemeral disk.
+            conn = request.environ.get('bod.connection') if has_request_context() else None
+            if conn is None or not conn.in_transaction:
+                raise RuntimeError('Cloudflare bank access requires a family transaction')
+            return conn
         path = getattr(g, 'bank_db_path', None) if has_request_context() else None
         if os.environ.get('BANK_OF_DAD_MODE') == 'hosted' and path is None:
             raise RuntimeError('Hosted bank access requires an authenticated family')

@@ -15,6 +15,7 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+  {% if cloudflare_incomplete|default(false) %}<p class="account-note" role="status">Local Cloudflare preview: Google sign-in and Stripe sandbox billing need operator configuration and real-provider validation. Owner controls require a privately configured Google identity. Do not use real family data.</p>{% endif %}
   <header class="topbar">
     <h1>🏦 Bank of Dad</h1>
     <button id="dadBtn" class="dad-btn" title="Dad controls">👨‍👧 Dad</button>
@@ -87,7 +88,11 @@
     <p>I built this to help my kids learn the basics of money, the value of saving, and the power of compounding when they start young. I hope it helps your family too.</p>
     <p><strong>Try it for a week on this device. No sign-up or card needed.</strong> Changes are saved in this browser’s bank.</p>
     <p class="guest-warning">Without an account, clearing browser data or switching devices can lose access to your bank and progress. Save / sync with an account any time in Dad, keeping everything you’ve done.</p>
+    {% if public_pilot|default(false) %}
+    <p class="guest-warning"><strong>Private pilot: payments are unavailable.</strong> Your trial lasts 7 days and then access pauses unless the operator separately grants free access. No automatic charge or permanent free access. Google sign-in is optional and depends on provider availability. Use sample names only; this pilot has not completed its privacy, retention and recovery review. {% if support_url %}<a href="{{ support_url }}">Contact support</a>.{% endif %}</p>
+    {% else %}
     <p>The free trial lasts 7 days. No automatic charge. If you’re enjoying the bank and want to help me keep the lights on, you can subscribe for $9.99/year. If that’s too much, {% if support_url %}<a href="{{ support_url }}" target="_blank" rel="noopener noreferrer">please get in touch about free access</a> and I’ll see what we can do{% else %}please ask the person running this bank about free access — a contact link hasn’t been set up yet{% endif %}.</p>
+    {% endif %}
     <p class="account-note">An old tablet left on for checking progress and collecting interest is handy, but not required — a phone or computer works too.</p>
     <button id="tryGuestBank" class="account-button account-primary">Let’s try it</button>
     <a href="/auth/login" class="welcome-signup">Save / sync this bank now (optional)</a>

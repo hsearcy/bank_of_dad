@@ -64,7 +64,7 @@ Follow-up from `94798b6410df27189d706ecf7ef4dedf631140c0`, still local-only with
 - A two-child bank with interest ready only for the second child previously highlighted the first child's Save button. Interest lookup now explicitly precedes the Save fallback; copy follows the actual target and is refreshed along with the highlight. Regressions cover both the second-child reward and the no-interest Save explanation at 390×667, with unchanged full SQLite snapshots.
 - A genuinely empty self-hosted bank now offers only its available Dad step (`1 of 1`, then Done), explains how to add the first kid and replay, and never offers missing saving/investing controls. Chromium verifies replay, real refresh, keyboard completion, working Dad/add-child controls, and an unchanged full SQLite snapshot. The shared server fixture can opt out of creating its usual synthetic child.
 
-New regression assertions failed against the original behavior before the fixes. Final commands used `/home/ares/.hermes/cache/scratch/bod-welcome-venv/bin/python` and actual `/usr/bin/chromium`:
+New regression assertions failed against the original behavior before the fixes. Final commands used `<isolated-venv>/bin/python` and actual `/usr/bin/chromium`:
 
 ```sh
 BANK_OF_DAD_MODE=self-hosted BANK_OF_DAD_BROWSER_TESTS=1 python -m pytest tests/test_experience_browser.py -q -s

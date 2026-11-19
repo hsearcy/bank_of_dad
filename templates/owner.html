@@ -18,7 +18,7 @@
       <section class="owner-card"><p>Sign in with the Google identity privately configured by the operator. Family sign-in alone does not grant owner access.</p>
       <a class="account-button" href="/auth/login?owner=1">Sign in to owner controls</a></section>
     {% else %}
-      <p>One saved parent sign-in per family, or a device-only guest bank. No emails or names are stored for sign-in; use the Family ID shared through your trusted support channel.</p>
+      <p>{% if saved_only %}Only families saved with a parent sign-in are shown. Device-only guest banks are not listed.{% else %}One saved parent sign-in per family, or a device-only guest bank.{% endif %} No emails or names are stored for sign-in; use the Family ID shared through your trusted support channel.</p>
       <aside class="owner-notice"><strong>Access now, not live Stripe status.</strong> Paid access comes from the last reconciled database snapshot, not a live subscription lookup. Trial and paid expiry use the server clock. Free grants are independent of billing: <strong>granting or revoking free access never stops Stripe renewal or cancels a subscription.</strong> Manage cancellation separately in Stripe.</aside>
       <form class="owner-search" method="get" action="/owner">
         <label for="family-search">Find a Family ID <small>(full ID or beginning)</small></label>
@@ -53,6 +53,9 @@
               <button class="account-button account-secondary">Revoke free access</button>
             {% else %}<button class="account-button">Grant free access</button>{% endif %}
           </form>
+          {% if family.audit %}<details><summary>Recent free-access audit (up to 20)</summary>
+            <ul>{% for event in family.audit %}<li>{{ date_label(event.created) }} · {{ event.action }} · {{ event.reason }}</li>{% endfor %}</ul>
+          </details>{% endif %}
         </article>
       {% else %}<p>No matching families.</p>{% endfor %}
       </div>
