@@ -1217,7 +1217,8 @@ function renderParentIdentity() {
   $('#dadBtn').title = `${name} controls`;
   $('#parentPanelTitle').textContent = `👨‍👧 ${name} Controls`;
   $('#changePinBtn').textContent = `🔒 Change ${name} PIN`;
-  if (document.activeElement !== $('#parentLabel')) $('#parentLabel').value = name;
+  $('#parentNameValue').textContent = name;
+  if ($('#parentLabelForm').hidden) $('#parentLabel').value = name;
 }
 let cancelParentPin = null;
 let parentGateGeneration = 0;
@@ -1306,6 +1307,8 @@ async function openDad() {
 // Forget the PIN whenever the Dad panel closes, so it must be re-entered.
 function closeDad() {
   parentGateGeneration++;
+  $('#parentLabelForm').hidden = true;
+  $('#parentNameDisplay').hidden = false;
   cancelParentPin?.();
   $("#dadPanel").classList.add("hidden");
   DAD_PIN = null;
@@ -1393,10 +1396,11 @@ function renderDadPanel() {
   const box = $("#dadKids");
   box.innerHTML = STATE.kids.map((k) => `
     <div class="dk" data-id="${k.id}">
-      <div class="dk-head">${esc(k.emoji)} ${esc(k.name)} — ${dollars(k.owned_cents)}</div>
-      <div class="row kid-management">
-        <button class="rename-kid" aria-label="Rename ${esc(k.name)}" data-id="${k.id}">Rename</button>
-        <button class="remove-kid" aria-label="Remove ${esc(k.name)}" data-id="${k.id}">Remove…</button>
+      <div class="dk-head"><span>${esc(k.emoji)} ${esc(k.name)} — ${dollars(k.owned_cents)}</span>
+      <div class="kid-management">
+        <button class="rename-kid" aria-label="Rename ${esc(k.name)}" title="Rename" data-id="${k.id}">✏️</button>
+        <button class="remove-kid" aria-label="Remove ${esc(k.name)}" title="Remove" data-id="${k.id}">🗑️</button>
+      </div>
       </div>
       <div class="row gift-row">
         <input type="number" placeholder="$ amount" class="gift-amt" step="0.5" min="0">
@@ -1529,15 +1533,35 @@ async function changePin() {
 }
 
 function wireGlobal() {
+  const closeNameEditor = () => {
+    $('#parentLabelForm').hidden = true;
+    $('#parentNameDisplay').hidden = false;
+    $('#parentLabel').value = parentName();
+    $('#editParentName').focus();
+  };
+  $('#editParentName').onclick = () => {
+    $('#parentLabel').value = parentName();
+    $('#parentLabelStatus').textContent = '';
+    $('#parentLabelForm').hidden = false;
+    $('#parentNameDisplay').hidden = true;
+    $('#parentLabel').focus();
+    $('#parentLabel').select();
+  };
+  $('#cancelParentName').onclick = closeNameEditor;
+  $('#parentLabelForm').onkeydown = e => {
+    if (e.key === 'Escape') { e.preventDefault(); closeNameEditor(); }
+  };
   $('#parentLabelForm').onsubmit = async e => {
     e.preventDefault();
+    const generation = parentGateGeneration;
     const status = $('#parentLabelStatus');
     const button = e.currentTarget.querySelector('button');
     button.disabled = true;
     try {
       const r = await api('/api/admin/label', {parent_label: $('#parentLabel').value});
+      if (generation !== parentGateGeneration) return;
       status.textContent = r.ok ? 'Name saved.' : (r.message || r.error || 'Could not save.');
-      if (r.ok) { $('#parentLabel').blur(); await refresh(); }
+      if (r.ok) { await refresh(); if (generation === parentGateGeneration) closeNameEditor(); }
     } catch (error) { status.textContent = 'Could not save. Please try again.'; }
     finally { button.disabled = false; }
   };

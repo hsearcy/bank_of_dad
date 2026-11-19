@@ -37,8 +37,9 @@ def test_save_tour_real_workerd_mobile_desktop(runtime, automatic):
             page.locator('#tryGuestBank').click()
             page.locator('#tourSkip').click()
             open_parent(page)
+            page.locator('#editParentName').click()
             page.locator('#parentLabel').fill('Mom')
-            page.locator('#parentLabelForm button').click()
+            page.locator('#parentLabelForm button[type="submit"]').click()
             from playwright.sync_api import expect
             expect(page.locator('#bankTitle')).to_have_text('🏦 Bank of Mom')
             page.reload()

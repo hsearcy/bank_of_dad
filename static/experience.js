@@ -10,8 +10,13 @@ const BodExperience = (() => {
     [() => find('.reward-btn[data-kind="interest"]') || find('.btn-save'), 'Collect a little growth', 'Tap Savings Interest when it’s ready. It goes back into savings, so future interest can earn interest too.'],
     ['.btn-save', 'Give saving a try', 'Move money from the wallet into savings, or take savings out again. You choose the amount.'],
     ['.btn-bond', 'Practice patience', 'Invest money locks money for a chosen term. When it’s ready, collect the payout. Compare saving and investing on the growth chart.'],
-    ['.wallet-actions', 'Four tools below the graph', 'Spend records a purchase. What if previews possible growth without moving money. History shows past activity. Expand graph opens a bigger view. Try any tool — your tour will wait.'],
-    [null, 'A few things to know', 'This is not a real bank. The founder uses it to track his own kids’ real balances, but this service is just a tracker.\n\nAn always-on shared tablet works especially well, but is optional.\n\nKids currently claim interest themselves, so they can feel their money grow.\n\nDefault savings and investment rates are intentionally VERY HIGH so young kids can see growth. Parents can change them in the parent dashboard.']
+    ['.wallet-actions', 'Additional tools', [
+      ['💸', 'Spend', 'Record a purchase.'],
+      ['🔮', 'What if', 'Preview growth without moving money.'],
+      ['📜', 'History', 'See past activity.'],
+      ['⛶', 'Expand graph', 'Open a bigger view.']
+    ]],
+    [null, 'A few things to know', 'I made this to track real balances for my own kids. It’s not a real bank.\n\nI like keeping it on an always-on tablet, but that’s optional.\n\nKids currently claim interest themselves, so they can feel their money grow.\n\nI set the default rates VERY HIGH so kids can see growth. You can change them in the parent dashboard.']
   ];
   const stepTarget = item => typeof item[0] === 'function' ? item[0]() : find(item[0]);
   function stepText(item, element) {
@@ -20,7 +25,7 @@ const BodExperience = (() => {
     }
     if (item === allSteps[5]) {
       const mode = STATE.config.auto_interest_enabled
-        ? 'Manual interest collection is the default. Automatic savings interest is on for this family: earned interest was collected when enabled, and now collects once every configured savings period instead of waiting for a manual claim.'
+        ? 'Automatic savings interest is on: it collects once every configured savings period.'
         : 'Manual interest collection is the default: kids claim interest themselves, so they can feel their money grow.';
       return item[2].replace('Kids currently claim interest themselves, so they can feel their money grow.', `${mode} ${parentName()} can change the optional automatic setting in the parent dashboard.`);
     }
@@ -50,6 +55,23 @@ const BodExperience = (() => {
     find('#tourText').textContent = target || !item[0]
       ? stepText(item, target)
       : 'This control is no longer available. Continue the tour, or open the parent dashboard to add a kid.';
+    if (target && item === allSteps[4]) {
+      const list = document.createElement('ul');
+      list.className = 'tour-tools';
+      for (const [icon, label, description] of item[2]) {
+        const row = document.createElement('li');
+        const bullet = document.createElement('span');
+        bullet.textContent = icon;
+        bullet.setAttribute('aria-hidden', 'true');
+        const text = document.createElement('span');
+        const name = document.createElement('b');
+        name.textContent = label;
+        text.append(name, ` — ${description}`);
+        row.append(bullet, text);
+        list.append(row);
+      }
+      find('#tourText').replaceChildren(list);
+    }
     sizeTour();
     if (!target) return;
     describedBy = target.getAttribute('aria-describedby');
@@ -146,12 +168,12 @@ const BodExperience = (() => {
         return;
       }
       sentinel = lock;
-      status.textContent = 'Active — keeping this visible screen awake.';
+      status.textContent = '';
       lock.addEventListener('release', () => {
         if (sentinel !== lock) return;
         sentinel = null;
         // No retry loop when the OS/browser releases for battery or policy.
-        status.textContent = wanted ? 'Not active — the browser released the wake lock. Toggle off and on to try again.' : 'Off';
+        status.textContent = wanted ? 'Not active — the browser released the wake lock. Toggle off and on to try again.' : '';
       });
     } catch (error) {
       if (generation === requestGeneration && wanted && visible()) {
@@ -208,7 +230,7 @@ const BodExperience = (() => {
         const old = sentinel;
         sentinel = null;
         release(old);
-        status.textContent = 'Off';
+        status.textContent = '';
       }
     };
     document.addEventListener('visibilitychange', () => {
