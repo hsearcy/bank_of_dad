@@ -47,6 +47,7 @@ class StripeFixture:
         self.invoices, self.payments, self.intents = {}, {}, {}
         self.keys = {}
         self.fail = False
+        self.checkout_failures = 0
         self.slow = False
         self.entered, self.release = threading.Event(), threading.Event()
         owner = self
@@ -114,6 +115,14 @@ class StripeFixture:
                 elif path.path == '/v1/prices/price_fixture':
                     obj = owner.price
                 elif path.path == '/v1/checkout/sessions' and method == 'POST':
+                    assert self.headers['Content-Type'] == 'application/x-www-form-urlencoded'
+                    if q.get('managed_payments[enabled]') != 'false' or owner.checkout_failures:
+                        owner.checkout_failures = max(0, owner.checkout_failures - 1)
+                        return self.reply({'error': {'type': 'invalid_request_error', 'message':
+                            'Invalid line_items[0]: the product tax code is missing. '
+                            'Product tax code is required for Managed Payments, which is enabled '
+                            'by default on your account. If you want to disable Managed Payments '
+                            'on this session, you can pass managed_payments[enabled]=false.'}}, 400)
                     assert q['mode'] == 'subscription' and q['line_items[0][price]'] == 'price_fixture'
                     assert q['line_items[0][quantity]'] == '1'
                     assert not any('trial' in k or 'metadata' in k for k in q)
@@ -283,6 +292,49 @@ def test_checkout_portal_and_authority(billing):
             stripe.subs[family['customer']] = [subscription(family['customer'], status, price=price)]
             assert post(c, runtime, '/billing/refresh', token).status_code == 303
             assert record(runtime, c)[1]['paid_until'] == 0
+
+
+def test_managed_payments_retry_preserves_existing_customer(billing):
+    """A rejected Session leaves a durable customer/attempt, not a charge."""
+    runtime, oidc, stripe = billing
+    with client(runtime) as c:
+        csrf(c); login(c, oidc, 'managed-payments-retry-parent'); token = csrf(c)
+        initial = record(runtime, c)[1]
+        before_customers, before_checkouts = len(stripe.customers), len(stripe.checkouts)
+        stripe.checkout_failures = 1
+        try:
+            assert post(c, runtime, '/billing/checkout', token).status_code == 503
+        finally:
+            stripe.checkout_failures = 0
+        path, rejected = record(runtime, c)
+        assert rejected['customer'] in stripe.customers
+        assert len(stripe.customers) == before_customers + 1
+        assert len(stripe.checkouts) == before_checkouts
+        with sqlite3.connect(path) as sql:
+            attempt, checkout_id = sql.execute('SELECT attempt,checkout_id FROM _bod_billing').fetchone()
+            assert attempt and checkout_id is None
+        calls = len(stripe.calls)
+        result = post(c, runtime, '/billing/checkout', token)
+        assert result.status_code == 303, result.text
+        assert result.headers['location'].startswith('https://checkout.stripe.com/')
+        assert len(stripe.customers) == before_customers + 1
+        assert len(stripe.checkouts) == before_checkouts + 1
+        assert not any(method == 'POST' and endpoint == '/v1/customers'
+                       for method, endpoint, _, _ in stripe.calls[calls:])
+        checkouts = [(form, key) for method, endpoint, form, key in stripe.calls
+                     if method == 'POST' and endpoint == '/v1/checkout/sessions'
+                     and form.get('customer') == rejected['customer']]
+        assert len(checkouts) == 2
+        assert checkouts[0] == checkouts[1]  # same serialized payload and idempotency key
+        assert checkouts[1][0]['managed_payments[enabled]'] == 'false'
+        assert post(c, runtime, '/billing/checkout', token).status_code == 303
+        assert len(stripe.checkouts) == before_checkouts + 1
+        after = record(runtime, c)[1]
+        assert after['customer'] == rejected['customer']
+        assert after['paid_until'] == 0 and after['trial_until'] == initial['trial_until']
+        assert not stripe.subs.get(after['customer'])
+        assert not stripe.invoices.get(after['customer'])
+        assert all(intent['customer'] != after['customer'] for intent in stripe.intents.values())
 
 
 def test_ordering_failure_retry_and_restart(billing):
