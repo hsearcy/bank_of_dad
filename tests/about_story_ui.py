@@ -15,7 +15,8 @@ def check_about_story(page, width):
     expect(page.locator('#aboutTitle')).to_be_focused()
     assert dialog.evaluate('(el) => el.scrollTop === 0')
     text = dialog.inner_text()
-    for phrase in ('$1 per year of age every 14 days', 'don’t tie allowance to chores',
+    for phrase in ('not a real bank', 'I use it to track money I owe my kids',
+                   '$1 per year of age every 14 days', 'don’t tie allowance to chores',
                    'not a rule for your family', 'another stuffed animal', 'early elementary',
                    '100% increase doubles the amount', '$1 becomes $2, then $4, then $8',
                    'not returns to expect from a real investment'):
