@@ -260,8 +260,9 @@ def test_request_owned_sqlite_transaction_commits_terms(family, monkeypatch):
     import app
     from flask import g
     # Exercise the retained hosted SQLite request ownership without any provider.
+    bank.set_dad_pin(family, '1234')
     monkeypatch.setenv('BANK_OF_DAD_MODE', 'hosted')
-    with app.app.test_request_context('/api/admin/rates', method='POST', json={'savings_period_days': 14}):
+    with app.app.test_request_context('/api/admin/rates', method='POST', json={'savings_period_days': 14}, headers={'X-Dad-Pin': '1234'}):
         g.bank_db_path = db.DB_PATH
         response = app.api_set_rates()
         assert response.json['ok']

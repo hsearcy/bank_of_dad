@@ -91,6 +91,7 @@ function renderSnapshot() {
     renderTimer = setTimeout(renderSnapshot, Math.max(50, delay));
     return;
   }
+  renderParentIdentity();
   render();
   // Keep remote rename/removal visible in Dad without wiping forms on money ticks.
   if (!$('#dadPanel').classList.contains('hidden') && dadKidSignature !== kidSignature()) renderDadPanel();
@@ -539,7 +540,7 @@ function render() {
   const wrap = $("#kids");
   wrap.innerHTML = "";
   if (!STATE.kids.length) {
-    wrap.innerHTML = '<p>Welcome! Open Dad controls to add your first kid.</p>';
+    wrap.innerHTML = `<p>Welcome! Open ${esc(parentName())} controls to add your first kid.</p>`;
   }
   const ranges = STATE.kids.map(chartData);
   CARD_SCALE = ranges.length ? {
@@ -567,15 +568,22 @@ function kidCard(k) {
       <div class="total">
         <div class="label">💰 All my money</div>
         <div class="big">${dollars(k.owned_cents)}</div>
-        <div class="coins"><span class="coin-count">🪙 ${coins(k.owned_cents)} coins</span> · 💵 ${dollars(k.wallet_cents)} to spend</div>
       </div>
+    </div>
+    <div class="wallet" role="group" aria-label="${esc(k.name)}'s wallet">
+      <div class="wallet-balance">
+        <div class="wallet-label">💵 Wallet <span>Available to spend</span></div>
+        <div class="wallet-value">${dollars(k.wallet_cents)}</div>
+        <div class="wallet-note">Savings &amp; investments are separate.</div>
+      </div>
+      <button class="btn-spend" title="Spend from wallet" aria-label="Spend from ${esc(k.name)}'s wallet">💸 Spend</button>
     </div>
     ${moneyChart(k)}
     <div class="chart-controls">
-      <div class="wallet-actions">
-        <button class="btn-spend" title="Spend">💸</button>
-        <button class="btn-whatif" title="What if?">🔮</button>
-        <button class="btn-history" title="History">📜</button>
+      <div class="wallet-actions" role="group" aria-label="Graph tools">
+        <button class="btn-spend" title="Spend" aria-label="Spend">💸</button>
+        <button class="btn-whatif" title="What if?" aria-label="What if?">🔮</button>
+        <button class="btn-history" title="History" aria-label="History">📜</button>
         <button class="btn-expand" title="Expand graph" aria-label="Expand graph">⛶</button>
       </div>
       <div class="chart-range">
@@ -592,7 +600,7 @@ function kidCard(k) {
       </div>
       <div class="pool-val s-val">${dollars(k.savings_cents)}</div>
       ${savingsBody(k, weeklyRate)}
-      <button class="btn-save" style="margin-top:10px;width:100%;border:none;border-radius:14px;padding:12px;color:#fff;font-weight:800;font-size:17px">🏦 Save coins</button>
+      <button class="btn-save" style="margin-top:10px;width:100%;border:none;border-radius:14px;padding:12px;color:#fff;font-weight:800;font-size:17px">🏦 Save money</button>
     </div>
 
     <div class="pool bonds">
@@ -601,7 +609,7 @@ function kidCard(k) {
         <span class="pool-badge">lock it → up to +${bestTerm().return_pct}%!</span>
       </div>
       ${bondsBody(k)}
-      <button class="btn-bond" style="margin-top:10px;width:100%;border:none;border-radius:14px;padding:12px;color:#fff;font-weight:800;font-size:17px">🚀 Invest coins</button>
+      <button class="btn-bond" style="margin-top:10px;width:100%;border:none;border-radius:14px;padding:12px;color:#fff;font-weight:800;font-size:17px">🚀 Invest money</button>
     </div>
   `;
 
@@ -610,7 +618,7 @@ function kidCard(k) {
   });
   $(".btn-save", el).onclick = () => openSaveModal(k);
   $(".btn-bond", el).onclick = () => openBondModal(k);
-  $(".btn-spend", el).onclick = () => openSpendModal(k);
+  $$(".btn-spend", el).forEach(b => { b.onclick = () => openSpendModal(k); });
   $(".btn-whatif", el).onclick = () => openWhatIf(k);
   $(".btn-history", el).onclick = () => openHistoryModal(k);
   $(".btn-expand", el).onclick = () => openGraphModal(k);
@@ -677,17 +685,19 @@ function rewardsBlock(k) {
   let tiles = "";
   if (k.pending_allowance_cents > 0)
     tiles += tile("allowance", "r-allow", "Allowance", k.pending_allowance_cents);
-  if (k.pending_interest_cents > 0)
+  if (k.pending_interest_cents > 0 && !STATE.config.auto_interest_enabled)
     tiles += tile("interest", "r-int", "Savings Interest", k.pending_interest_cents, "r-interest");
   if (k.pending_bonds_cents > 0)
     tiles += tile("invest", "r-inv", "Investment Income", k.pending_bonds_cents);
-  return `<div class="rewards">${tiles}</div>`;
+  const scheduled = STATE.config.auto_interest_enabled && k.next_auto_interest_ts
+    ? `<div class="next-allow">🏦 Interest collects automatically ${untilLabel(k.next_auto_interest_ts-serverNow())}</div>` : "";
+  return `<div class="rewards">${tiles}</div>${scheduled}`;
 }
 
 // Savings: a concrete "in 3 months" projection (the chart shows the curve).
 function savingsBody(k, weeklyRate) {
   if (k.savings_cents <= 0) {
-    return `<div class="pool-empty">Tap <b>Save coins</b> and watch them grow! 🌱</div>`;
+    return `<div class="pool-empty">Tap <b>Save money</b> and watch it grow! 🌱</div>`;
   }
   const future = k.savings_cents * Math.pow(1 + weeklyRate, 13 * WEEK / savingsPeriodSeconds());
   return `<div class="pool-sub">📈 Growing now… in 3 months ≈ <b>${dollars(future)}</b></div>`;
@@ -696,7 +706,7 @@ function savingsBody(k, weeklyRate) {
 // Invest: a progress bar per lock, value climbing toward the big payout.
 function bondsBody(k) {
   if (!k.bonds.length) {
-    return `<div class="pool-empty">Lock coins away and they grow into a LOT more! 🚀</div>`;
+    return `<div class="pool-empty">Set money aside and watch it grow into a LOT more! 🚀</div>`;
   }
   return k.bonds.map((b, i) =>
     `<div class="bond-row ${b.ready ? "ready" : ""}" data-i="${i}">
@@ -779,14 +789,13 @@ function onCollect(k, kind, ev) {
 }
 
 // Spin the hero number UP by `delta`, starting from whatever's currently shown
-// (so rapid back-to-back collects chain correctly), with the coin count.
+// (so rapid back-to-back collects chain correctly).
 function spinHero(kidId, delta) {
   const cards = $$("#kids .card");
   const idx = STATE.kids.findIndex((x) => x.id === kidId);
   const card = cards[idx];
   const bigEl = card && $(".big", card);
   if (!bigEl) return;
-  const ccEl = $(".coin-count", card);
   const fromC = Math.round((parseFloat(bigEl.textContent.replace(/[^0-9.]/g, "")) || 0) * 100);
   const toC = fromC + delta;
   const start = performance.now(), dur = 1100;
@@ -796,7 +805,6 @@ function spinHero(kidId, delta) {
     const ease = 1 - Math.pow(1 - p, 3);          // easeOutCubic
     const v = Math.round(fromC + (toC - fromC) * ease);
     bigEl.textContent = dollars(v);
-    if (ccEl) ccEl.textContent = `🪙 ${coins(v)} coins`;
     bigEl.classList.toggle("pop", p < 1);
     if (p < 1) requestAnimationFrame(step);
   };
@@ -857,7 +865,7 @@ function openWhatIf(k) {
   const f = (c) => (c ? (c / 100).toFixed(2) : "");
   card.innerHTML = `
     <h2>🔮 What if?</h2>
-    <p>Try putting some coins to work, then tap <b>Let's see!</b> to watch your
+    <p>Try putting some money to work, then tap <b>Let's see!</b> to watch your
        graph show where your money <i>could</i> go. (You have <b>${dollars(k.wallet_cents)}</b>.)</p>
     <div class="wi-input"><span>🏦 Save</span><span class="wi-dollar">$</span>
       <input class="wi-save" type="number" inputmode="decimal" step="0.5" min="0" placeholder="0" value="${f(pre.save)}"></div>
@@ -884,7 +892,7 @@ function amountGrid(maxCents, min) {
   if (maxCents >= min && !opts.includes(maxCents)) opts.push(maxCents);
   return opts.map((c) =>
     `<button data-amt="${c}">${c === maxCents ? "All " : ""}${dollars(c)}</button>`
-  ).join("") || `<p>Not enough coins yet — collect some rewards first! 🎁</p>`;
+  ).join("") || `<p>Not enough money in your wallet yet — collect some rewards first! 🎁</p>`;
 }
 
 // Amount picker: quick preset buttons + a free-entry "$" field, kept in sync.
@@ -926,7 +934,7 @@ function openSaveModal(k) {
   card.innerHTML = `
     <h2>🏦 ${esc(k.name)}'s Savings</h2>
     <p>Savings grow <b>${cfg.savings_weekly_pct}% every ${savingsPeriodLabel()}</b>! 📈<br>
-       You have <b>${dollars(k.wallet_cents)}</b> coins to save.</p>
+       Your wallet has <b>${dollars(k.wallet_cents)}</b> available to save.</p>
     <div class="amount-grid">${amountGrid(k.wallet_cents, cfg.min_move_cents)}</div>
     <div class="spend-amt-row"><span class="spend-dollar">$</span>
       <input class="custom-amt savings-amt" type="number" inputmode="decimal" enterkeyhint="done" step="0.5" min="0" placeholder="or type any amount"></div>
@@ -969,11 +977,11 @@ function openBondModal(k) {
        ${b.emoji} ${b.label}<br><small>+${b.return_pct}% 🤑</small></button>`
   ).join("");
   card.innerHTML = `
-    <h2>🚀 Invest in the Bank of Dad</h2>
-    <p>Lock your coins away for a while and they grow into a <b>LOT</b> more!
+    <h2>🚀 Invest in the Bank of ${esc(parentName())}</h2>
+    <p>Set your money aside for a while and watch it grow into a <b>LOT</b> more!
        Choose a duration and gain below:</p>
     <div class="bond-pick">${picks}</div>
-    <p>How many coins to lock? (You have <b>${dollars(k.wallet_cents)}</b>)</p>
+    <p>How much to invest? (Your wallet has <b>${dollars(k.wallet_cents)}</b> available)</p>
     <div class="amount-grid">${amountGrid(k.wallet_cents, cfg.min_move_cents)}</div>
     <div class="spend-amt-row"><span class="spend-dollar">$</span>
       <input class="custom-amt" type="number" inputmode="decimal" step="0.5" min="0" placeholder="or type any amount"></div>
@@ -1013,8 +1021,8 @@ function openSpendModal(k) {
   const card = $("#modalCard");
   const cfg = STATE.config;
   card.innerHTML = `
-    <h2>💸 Spend coins</h2>
-    <p>You have <b>${dollars(k.wallet_cents)}</b> to spend. What did you buy?</p>
+    <h2>💸 Spend from wallet</h2>
+    <p>Your wallet has <b>${dollars(k.wallet_cents)}</b> available to spend. What did you buy?</p>
     <input class="spend-reason" placeholder="What for? (e.g. ice cream 🍦)" maxlength="40">
     <div class="spend-amt-row">
       <span class="spend-dollar">$</span>
@@ -1203,85 +1211,106 @@ function rainOver(rect, count = 24, emoji) {
 
 /* ---- Dad PIN gate ---------------------------------------------------- */
 // A big tappable numeric keypad. Resolves to the entered PIN, or null if
-// cancelled. opts.title sets the heading; opts.mandatory hides Cancel and
-// disables backdrop-dismiss (used for the forced first-run setup).
+// cancelled. Native modal focus and explicit submit also support 5–8 digit PINs.
+const parentName = () => STATE.config?.parent_label || 'Dad';
+function renderParentIdentity() {
+  const name = parentName();
+  $('#bankTitle').textContent = `🏦 Bank of ${name}`;
+  document.title = `🏦 Bank of ${name}`;
+  $('#dadBtn').textContent = `👨‍👧 ${name}`;
+  $('#dadBtn').title = `${name} controls`;
+  $('#parentPanelTitle').textContent = `👨‍👧 ${name} Controls`;
+  $('#changePinBtn').textContent = `🔒 Change ${name} PIN`;
+  if (document.activeElement !== $('#parentLabel')) $('#parentLabel').value = name;
+}
+let cancelParentPin = null;
+let parentGateGeneration = 0;
 function askPin(err, opts = {}) {
-  const title = opts.title || "🔒 Dad PIN";
-  return new Promise((resolve) => {
-    let pin = "";
-    const pad = document.createElement("div");
-    pad.className = "panel";
-    const draw = () => {
-      pad.innerHTML = `
-        <div class="panel-card pin-card">
-          <h2>${title}</h2>
-          ${err ? `<div class="pin-err">${err}</div>` : ""}
-          <div class="pin-dots">${"●".repeat(pin.length)}<span class="pin-empty">${"○".repeat(Math.max(0, 4 - pin.length))}</span></div>
-          <div class="keypad">
-            ${[1,2,3,4,5,6,7,8,9].map((n) => `<button data-k="${n}">${n}</button>`).join("")}
-            <button data-k="clear">⌫</button>
-            <button data-k="0">0</button>
-            <button data-k="ok" class="kp-ok">✓</button>
-          </div>
-          ${opts.mandatory ? "" : `<button class="close">Cancel</button>`}
-        </div>`;
-      $$(".keypad button", pad).forEach((b) => {
-        b.onclick = () => {
-          const k = b.dataset.k;
-          if (k === "clear") pin = pin.slice(0, -1);
-          else if (k === "ok") { cleanup(); resolve(pin); return; }
-          else if (pin.length < 4) pin += k;
-          draw();
-          // 4-digit PINs auto-submit (after the 4th dot shows)
-          if (pin.length === 4) setTimeout(() => { cleanup(); resolve(pin); }, 160);
-        };
-      });
-      if (!opts.mandatory) {
-        $(".close", pad).onclick = () => { cleanup(); resolve(null); };
-        pad.onclick = (e) => { if (e.target === pad) { cleanup(); resolve(null); } };
-      }
-    };
-    const cleanup = () => pad.remove();
-    draw();
+  return new Promise(resolve => {
+    const pad = document.createElement('dialog');
+    pad.className = 'kid-dialog pin-card';
+    pad.setAttribute('aria-labelledby', 'pinTitle');
+    pad.innerHTML = `<form>
+      <h2 id="pinTitle">${esc(opts.title || `🔒 ${parentName()} PIN`)}</h2>
+      <p id="pinHelp" role="status">${esc(err || 'Enter your PIN to open parent controls.')}</p>
+      <label for="parentPinInput">PIN (4–8 digits)</label>
+      <input id="parentPinInput" type="password" inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" required autocomplete="off" aria-describedby="pinHelp">
+      <div class="keypad">${[1,2,3,4,5,6,7,8,9,'clear',0].map(n => `<button type="button" data-k="${n}" aria-label="${n === 'clear' ? 'Delete last digit' : n}">${n === 'clear' ? '⌫' : n}</button>`).join('')}<button type="submit" data-k="ok" class="kp-ok" aria-label="Continue">✓</button></div>
+      <button type="button" class="close">Cancel</button>
+    </form>`;
+    const input = pad.querySelector('input');
+    const finish = value => { cancelParentPin = null; pad.close(); pad.remove(); input.value = ''; resolve(value); };
+    cancelParentPin = () => finish(null);
+    pad.querySelector('form').onsubmit = e => { e.preventDefault(); finish(input.value); };
+    pad.querySelectorAll('[data-k]').forEach(button => {
+      if (button.dataset.k === 'ok') return;
+      button.onclick = () => {
+        input.value = button.dataset.k === 'clear' ? input.value.slice(0,-1)
+          : input.value.length < 8 ? input.value + button.dataset.k : input.value;
+        input.focus();
+      };
+    });
+    pad.querySelector('.close').onclick = () => finish(null);
+    pad.addEventListener('cancel', e => { e.preventDefault(); finish(null); });
+    pad.addEventListener('keydown', e => {
+      if (e.key !== 'Tab') return;
+      const controls = [...pad.querySelectorAll('input,button')];
+      if (e.shiftKey && document.activeElement === controls[0]) { e.preventDefault(); controls.at(-1).focus(); }
+      else if (!e.shiftKey && document.activeElement === controls.at(-1)) { e.preventDefault(); controls[0].focus(); }
+    });
     document.body.appendChild(pad);
+    pad.showModal();
+    input.focus();
   });
 }
 
-// First-run: if no Dad PIN exists yet, force setting one before the app is used,
-// so the Dad controls are never left unprotected.
 async function ensurePinSetup() {
-  const st = await api("/api/admin/status");
-  if (st.pin_set || st.hosted_parent) return;
-  let err = "Welcome! Create a Dad PIN to protect the controls.";
+  const generation = parentGateGeneration;
+  let err = `Create a ${parentName()} PIN to protect parent controls.`;
   while (true) {
-    const p1 = await askPin(err, { mandatory: true, title: "🔒 Set Dad PIN" });
-    if (!p1 || p1.length < 4) { err = "Use at least 4 digits."; continue; }
-    const p2 = await askPin("Re-enter to confirm", { mandatory: true, title: "🔒 Confirm PIN" });
+    const p1 = await askPin(err, {title: `🔒 Set ${parentName()} PIN`});
+    if (p1 === null) return false;
+    const p2 = await askPin('Enter the same PIN again to confirm.', {title: '🔒 Confirm PIN'});
+    if (p2 === null) return false;
     if (p1 !== p2) { err = "PINs didn't match — try again."; continue; }
-    const r = await api("/api/admin/pin", { new_pin: p1 });
-    if (r.ok) { DAD_PIN = null; return; }   // don't linger; re-entered on first Dad open
-    err = r.message || "Couldn't save — try again.";
+    const r = await api('/api/admin/pin', {new_pin: p1});
+    if (generation !== parentGateGeneration) return false;
+    if (r.ok) { DAD_PIN = p1; return true; }
+    err = r.message || "Couldn't save. Try again.";
   }
 }
 
 /* ---- Dad panel ------------------------------------------------------- */
+let openingParent = false;
 async function openDad() {
+  if (openingParent) return;
+  openingParent = true;
+  const generation = parentGateGeneration;
+  try {
+  DAD_PIN = null;
   const st = await api("/api/admin/status");
+  if (generation !== parentGateGeneration) return;
+  if (!st.pin_set && !(await ensurePinSetup())) return;
   if (st.pin_set) {                  // ask for the PIN every single time
     let err = "";
     while (true) {
       const entered = await askPin(err);
       if (entered === null) return;               // cancelled
       const v = await api("/api/admin/verify", { pin: entered });
+      if (generation !== parentGateGeneration) return;
       if (v.ok) { DAD_PIN = entered; break; }
-      err = "Nope, try again!";
+      err = "Wrong PIN or too many attempts. Wait a minute after five tries.";
     }
   }
   renderDadPanel();
+  } catch (error) { DAD_PIN = null; }
+  finally { openingParent = false; }
 }
 
 // Forget the PIN whenever the Dad panel closes, so it must be re-entered.
 function closeDad() {
+  parentGateGeneration++;
+  cancelParentPin?.();
   $("#dadPanel").classList.add("hidden");
   DAD_PIN = null;
 }
@@ -1444,6 +1473,10 @@ function renderDadRates() {
       <fieldset class="rate-rule"><legend>🏦 Savings</legend>
         <label><input aria-label="Savings percent" class="rate-sav" type="number" step="any" min="0" required value="${cfg.savings_weekly_pct}"> %</label>
         <label>every <input aria-label="Savings period in days" class="period-sav" type="number" step="1" min="1" max="3650" required value="${cfg.savings_period_days || 7}"> days</label>
+        <label><input class="auto-interest" type="checkbox" ${cfg.auto_interest_enabled ? "checked" : ""}> Automatically collect savings interest for every child</label>
+        <p class="rate-note">Off by default. Turning on collects interest already earned now, then collects and compounds once every savings period, starting from now. No compounding for earlier periods. Manual interest collection waits for the schedule while on.</p>
+        <p class="rate-note">Changing the rate keeps the next collection date; changing the savings period starts a new period now. Turning off keeps earnings. Saving or withdrawing does not add an extra interest collection while on.</p>
+        <p class="rate-note">${cfg.auto_interest_background ? "Background collection is supported even when the dashboard is closed." : "Self-hosted: collection catches up on access and while this dashboard is open. No offline background service is provided."}</p>
       </fieldset>
       ${cfg.bonds.map((b, i) => `
         <fieldset class="rate-rule"><legend>${b.emoji} Investment ${i + 1}</legend>
@@ -1467,6 +1500,7 @@ function renderDadRates() {
         savings_weekly_pct: $(".rate-sav", box).valueAsNumber,
         savings_period_days: $(".period-sav", box).valueAsNumber,
         returns, bond_period_days,
+        auto_interest_enabled: $(".auto-interest", box).checked,
       });
       if (!result.ok) { status.textContent = result.message || "Could not save. Try again."; return; }
       await refresh();
@@ -1480,20 +1514,39 @@ function renderDadRates() {
 }
 
 async function changePin() {
+  const generation = parentGateGeneration;
   const st = await api("/api/admin/status");
+  if (generation !== parentGateGeneration) return;
   let current = null;
   if (st.pin_set) {
     current = DAD_PIN || (await askPin("Enter current PIN"));
     if (current === null) return;
   }
-  const next = await askPin(st.pin_set ? "Enter NEW PIN (✓ empty to remove)" : "Set a 4-digit PIN");
+  const next = await askPin("Enter a new 4–8 digit PIN");
   if (next === null) return;
+  const confirmation = await askPin("Enter the same new PIN again", {title: "🔒 Confirm PIN"});
+  if (confirmation !== next) return;
   const r = await api("/api/admin/pin", { current_pin: current, new_pin: next });
+  if (generation !== parentGateGeneration) return;
   alert(r.message || (r.ok ? "Saved" : "Failed"));
   if (r.ok) DAD_PIN = next || null;
 }
 
 function wireGlobal() {
+  $('#parentLabelForm').onsubmit = async e => {
+    e.preventDefault();
+    const status = $('#parentLabelStatus');
+    const button = e.currentTarget.querySelector('button');
+    button.disabled = true;
+    try {
+      const r = await api('/api/admin/label', {parent_label: $('#parentLabel').value});
+      status.textContent = r.ok ? 'Name saved.' : (r.message || r.error || 'Could not save.');
+      if (r.ok) { $('#parentLabel').blur(); await refresh(); }
+    } catch (error) { status.textContent = 'Could not save. Please try again.'; }
+    finally { button.disabled = false; }
+  };
+  window.addEventListener('pagehide', closeDad);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) closeDad(); });
   $("#dadBtn").onclick = openDad;
   $("#closeDad").onclick = closeDad;
   $("#addKidBtn").onclick = async () => {
@@ -1528,7 +1581,7 @@ BodExperience.init();
 startLiveUpdates();
 (async () => {
   await refresh();
-  await ensurePinSetup();      // force a Dad PIN on first launch
+  // PIN setup is required on first parent-control open, not guest onboarding.
   const welcome = document.querySelector('#guestWelcome');
   if (welcome) {
     document.querySelector('#sampleInterestNote').hidden = !(STATE.kids[0]?.pending_interest_cents > 0);

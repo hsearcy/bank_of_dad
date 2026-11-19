@@ -1,4 +1,9 @@
 """Actual hosted UI + wss push in isolated Chromium contexts, polling disabled."""
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / 'tests'))
+from parent_pin_ui import open_parent
+
 import os
 import threading
 
@@ -69,7 +74,7 @@ def test_hosted_browser_push_isolation_reconnect_and_expiry(hosted_app):
                 assert signed_event(app.test_client(), origin, 'evt_' + customer, customer).status_code == 200
                 page.goto(origin + '/')
                 subscribed(page)
-                page.locator('#dadBtn').click()
+                open_parent(page)
                 page.locator('#newKidName').fill(name)
                 page.locator('#addKidBtn').click()
                 sync_api.expect(page.locator('.dk-head')).to_contain_text(name)
@@ -86,7 +91,7 @@ def test_hosted_browser_push_isolation_reconnect_and_expiry(hosted_app):
             b_ctx, b = parent('parent-b', 'cus_2', 'Only B')
             subscribed(b)
             b_frames = b.evaluate('window.__frames.length')
-            a.locator('#dadBtn').click()
+            open_parent(a)
             a.locator('.gift-amt').fill('2')
             a.locator('.gift-note').fill('Synthetic gift A')
             a.locator('.gift-btn').click()

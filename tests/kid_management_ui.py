@@ -17,7 +17,7 @@ def exercise_kid_controls(page, observer, unlock):
     kid.locator('.rename-kid').click()
     expect(page.get_by_role('dialog')).to_be_visible()
     page.get_by_label('Name', exact=True).fill('New <Kid> 🐣')
-    page.get_by_role('button', name='Save name', exact=True).click()
+    page.locator('#kidDialog').get_by_role('button', name='Save name', exact=True).click()
     expect(kid.locator('.dk-head')).to_contain_text('New <Kid> 🐣')
     expect(observer.locator('#kids .name').first).to_have_text('New <Kid> 🐣', timeout=5000)
     # Cancellation (button and Escape) performs no POST and preserves all state.

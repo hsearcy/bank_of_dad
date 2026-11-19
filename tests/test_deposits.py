@@ -178,7 +178,9 @@ class GiftApiTests(BankTestCase):
         super().setUp()
         import app
         app.app.config["TESTING"] = True
+        self.bank.set_dad_pin(self.conn, "1234")
         self.client = app.app.test_client()
+        self.client.environ_base["HTTP_X_DAD_PIN"] = "1234"
 
     def post(self, path, body):
         return self.client.post(path, json=body)
@@ -218,6 +220,7 @@ class GiftApiTests(BankTestCase):
         self.assertEqual(self.wallet(), wallet_before + 400)
 
     def test_api_gift_requires_pin_when_set(self):
+        self.client.environ_base.pop("HTTP_X_DAD_PIN", None)
         self.bank.set_dad_pin(self.conn, "1234")
         r = self.post("/api/admin/gift",
                       {"kid_id": self.kid_id, "amount_cents": 250, "note": "sneaky"})

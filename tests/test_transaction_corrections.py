@@ -112,8 +112,10 @@ class TransactionCorrectionTests(unittest.TestCase):
         import app
         app.app.config['TESTING'] = True
         tx_id = self.setup_transaction('gift', 500, 100, 0)
+        bank.set_dad_pin(self.conn, '1234')
         before = self.snapshot()
         client = app.app.test_client()
+        client.environ_base['HTTP_X_DAD_PIN'] = '1234'
         for endpoint, data in [('edit', {'tx_id': tx_id, 'amount_cents': 100, 'note': 'changed'}),
                                ('delete', {'tx_id': tx_id})]:
             with self.subTest(endpoint=endpoint):

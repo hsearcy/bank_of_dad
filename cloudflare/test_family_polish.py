@@ -1,4 +1,9 @@
 """Cross-feature acceptance on disposable workerd state; signed local OIDC only."""
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / 'tests'))
+from parent_pin_ui import open_parent
+
 import os
 from pathlib import Path
 import sqlite3
@@ -75,7 +80,7 @@ def test_combined_guest_edits_claim_owner_restart_and_responsive_ui(owner_runtim
                     dialog = page.get_by_role('dialog', name='About Bank of Dad' if label == 'About' else label, exact=True)
                     expect(dialog).to_be_visible()
                     page.keyboard.press('Escape')
-                page.locator('#dadBtn').click()
+                open_parent(page)
                 expect(page.locator('.period-sav')).to_have_value('2')
                 expect(page.locator('.period-bond[data-key="1mo"]')).to_have_value('12')
                 page.locator('.rename-kid').click()

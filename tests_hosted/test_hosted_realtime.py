@@ -64,9 +64,11 @@ def test_family_scoped_post_commit_notifications_and_reconnect(hosted_app):
     app, host, state, origin = hosted_app
     a = entitled(app, state, origin, 'parent-a', 'cus_1')
     b = entitled(app, state, origin, 'parent-b', 'cus_2')
+    assert call(a, '/api/admin/pin', origin, method='POST', headers={'X-CSRF-Token': csrf(a)},
+                json={'new_pin': '1234'}).json['ok']
     with network(app) as base:
         headers = {'Host': 'bank.example.test', 'Origin': origin,
-                   'Cookie': cookie(a), 'X-CSRF-Token': csrf(a)}
+                   'Cookie': cookie(a), 'X-CSRF-Token': csrf(a), 'X-Dad-Pin': '1234'}
         def http(method, path, **kwargs):
             return requests.request(method, base + path, headers=headers, timeout=5, **kwargs)
         sockets = []

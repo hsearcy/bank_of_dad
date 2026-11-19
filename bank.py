@@ -2,11 +2,15 @@
 Bank of Dad — core money logic.
 
 Pure-ish functions over a sqlite connection. Interest/allowance/bonds accrue
-*lazily*: nothing runs in the background. We compute what's owed from
+lazily by default. Optional automatic savings collection uses persisted deadlines;
+Cloudflare settles idle deadlines in its existing alarm. We compute what's owed from
 timestamps whenever the state is read, so the app works fine on a tablet that
 sleeps for days and there's no cron to babysit.
 """
 
+from contextvars import ContextVar
+from functools import wraps
+from fractions import Fraction
 import hashlib
 import math
 import sqlite3
@@ -14,6 +18,140 @@ import time
 
 import config
 import db
+
+
+# Automatic collection is family-wide, just like the savings terms.
+# The persisted per-child deadline is independent of reads and manual actions.
+_active_action: ContextVar[object] = ContextVar("bank_action", default=None)
+AUTO_BATCH = 512
+MAX_EXACT_CENTS = 2**53 - 1  # also exact through the Worker SQL/JS bridge
+
+
+class InterestCatchupPending(RuntimeError):
+    pass
+
+
+def auto_interest_enabled(conn):
+    return db.get_setting(conn, "auto_interest_enabled", "0") == "1"
+
+
+def _commit(conn):
+    if _active_action.get() is not conn:
+        conn.commit()
+
+
+def _atomic_action(fn):
+    @wraps(fn)
+    def run(conn, *args, **kwargs):
+        if _active_action.get() is not None:
+            raise RuntimeError("Reentrant bank action")
+        native = isinstance(conn, sqlite3.Connection)
+        owned = native and not conn.in_transaction
+        if owned:
+            conn.execute("BEGIN IMMEDIATE")
+        if native:
+            conn.execute("SAVEPOINT bank_action")
+        token = _active_action.set(conn)
+        try:
+            if settle_auto_interest(conn):
+                raise InterestCatchupPending("Savings catch-up in progress. Retry shortly.")
+            result = fn(conn, *args, **kwargs)
+            if native:
+                conn.execute("RELEASE bank_action")
+            # Existing HTTP routes own their whole connection. Explicit domain
+            # callers with an existing transaction retain commit/rollback control.
+            from flask import has_request_context
+            if native and (owned or has_request_context()):
+                conn.commit()
+            return result
+        except InterestCatchupPending:
+            # Commit bounded progress, but never run a mutation against a
+            # partially caught-up principal. The DO commits ordinary HTTP 503s.
+            if native:
+                conn.execute("RELEASE bank_action")
+                from flask import has_request_context
+                if owned or has_request_context():
+                    conn.commit()
+            raise
+        except Exception:
+            if native and conn.in_transaction:
+                conn.execute("ROLLBACK TO bank_action")
+                conn.execute("RELEASE bank_action")
+                if owned:
+                    conn.rollback()
+            raise
+        finally:
+            _active_action.reset(token)
+    return run
+
+
+def _credit_auto(conn, kid, at):
+    exact = _interest_exact(kid, at, savings_weekly_rate(conn))
+    if abs(exact) > MAX_EXACT_CENTS:
+        raise RuntimeError("Savings exceed supported exact-cent range")
+    cents = max(0, round(exact))
+    savings = kid["savings_cents"] + cents
+    if not 0 <= savings <= MAX_EXACT_CENTS:
+        raise RuntimeError("Savings exceed supported exact-cent range")
+    conn.execute("UPDATE kids SET savings_cents=?, savings_interest_carry=?, savings_accrued_ts=? WHERE id=?",
+                 (savings, float(exact-cents), max(at, kid["savings_accrued_ts"]), kid["id"]))
+    _store_exact_carry(conn, kid["id"], exact-cents, max(at, kid["savings_accrued_ts"]))
+    if cents:
+        from flask import has_request_context, request
+        if has_request_context():
+            request.environ["bod.auto_changed"] = True
+        _tx(conn, kid["id"], at, "interest", cents, "Automatic savings interest")
+        _record_history(conn, kid["id"], at)
+
+
+def settle_auto_interest(conn, now=None):
+    """Within the caller's writer transaction; return whether work remains.
+
+    At most AUTO_BATCH deadlines per call, across all kids. A zero-cent period
+    still advances its deadline, retaining fractional carry. No replay at today's
+    terms: settings and money mutations drain due periods before changing state.
+    """
+    if not auto_interest_enabled(conn):
+        return False
+    now = now_ts(conn) if now is None else now
+    period = savings_period_days(conn) * 86400
+    for _ in range(AUTO_BATCH):
+        kid = conn.execute("SELECT * FROM kids WHERE auto_interest_due_ts<=? ORDER BY auto_interest_due_ts,id LIMIT 1", (now,)).fetchone()
+        if not kid:
+            return False
+        due = kid["auto_interest_due_ts"]
+        _credit_auto(conn, kid, due)
+        conn.execute("UPDATE kids SET auto_interest_due_ts=? WHERE id=?", (due+period, kid["id"]))
+    return conn.execute("SELECT 1 FROM kids WHERE auto_interest_due_ts<=? LIMIT 1", (now,)).fetchone() is not None
+
+
+def _set_auto_interest(conn, enabled):
+    if type(enabled) is not bool:
+        raise ValueError("Automatic interest must be on or off")
+    if enabled == auto_interest_enabled(conn):
+        return
+    now = now_ts(conn)
+    if enabled:
+        for kid in conn.execute("SELECT * FROM kids").fetchall():
+            _credit_auto(conn, kid, now)  # one existing pending claim, not past compounding
+            anchor = max(now, kid["savings_accrued_ts"])
+            conn.execute("UPDATE kids SET auto_interest_due_ts=? WHERE id=?",
+                         (anchor+savings_period_days(conn)*86400, kid["id"]))
+    else:
+        # Keep all accrued earnings; turning off is not an extra claim.
+        for kid in conn.execute("SELECT * FROM kids").fetchall():
+            earned = _interest_exact(kid, now, savings_weekly_rate(conn))
+            anchor = max(now, kid["savings_accrued_ts"])
+            conn.execute("UPDATE kids SET savings_interest_carry=?, savings_accrued_ts=?, auto_interest_due_ts=NULL WHERE id=?",
+                         (float(earned), anchor, kid["id"]))
+            _store_exact_carry(conn, kid["id"], earned, anchor)
+    db.set_setting(conn, "auto_interest_enabled", int(enabled))
+
+
+@_atomic_action
+def set_auto_interest(conn, enabled):
+    _set_auto_interest(conn, enabled)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -24,10 +162,11 @@ def now_ts(conn):
     return time.time() + offset
 
 
+@_atomic_action
 def fast_forward(conn, days):
     offset = float(db.get_setting(conn, "time_offset", "0") or 0)
     db.set_setting(conn, "time_offset", offset + days * 86400)
-    conn.commit()
+    _commit(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -63,8 +202,11 @@ def savings_period_pct(conn):
 
 
 def savings_weekly_rate(conn):
-    """Equivalent weekly simple rate for existing accrual callers."""
-    return savings_period_pct(conn) / 100 * (7 / savings_period_days(conn))
+    """Exact weekly rate; saved percentages mean their finite decimal spelling."""
+    pct = db.get_setting(conn, "savings_weekly_pct")
+    if pct is None:
+        pct = Fraction(str(config.SAVINGS_WEEKLY_RATE)) * 100
+    return Fraction(pct) / 100 * Fraction(7, savings_period_days(conn))
 
 
 def bond_days(conn, term_key):
@@ -98,13 +240,16 @@ def _rate_number(value, *, days=False):
     return float(value)
 
 
-def set_rates(conn, savings_weekly_pct=None, returns=None, savings_days=None, bond_period_days=None):
+@_atomic_action
+def set_rates(conn, savings_weekly_pct=None, returns=None, savings_days=None, bond_period_days=None, auto_interest=None):
     """Change future terms only; preserve accrued savings (including fractions).
 
     No automatic collection/compounding or balance/ledger changes. An unchanged
     save is a true no-op. Native SQLite owns a writer lock before the first read;
     Workers already own the enclosing family transactionSync.
     """
+    if auto_interest is not None and type(auto_interest) is not bool:
+        raise ValueError("Automatic interest must be on or off")
     changes = {}
     if savings_weekly_pct is not None:
         changes["savings_weekly_pct"] = _rate_number(savings_weekly_pct)
@@ -138,14 +283,21 @@ def set_rates(conn, savings_weekly_pct=None, returns=None, savings_days=None, bo
             for kid in conn.execute("SELECT * FROM kids").fetchall():
                 earned = _interest_exact(kid, now, old_rate)
                 conn.execute("UPDATE kids SET savings_interest_carry=?, savings_accrued_ts=? WHERE id=?",
-                             (earned, max(now, kid["savings_accrued_ts"]), kid["id"]))
+                             (float(earned), max(now, kid["savings_accrued_ts"]), kid["id"]))
+                _store_exact_carry(conn, kid["id"], earned, max(now, kid["savings_accrued_ts"]))
         for key, value in changes.items():
             db.set_setting(conn, key, value)
+        if "savings_period_days" in changes and auto_interest_enabled(conn):
+            for kid in conn.execute("SELECT * FROM kids").fetchall():
+                conn.execute("UPDATE kids SET auto_interest_due_ts=? WHERE id=?",
+                             (max(now, kid["savings_accrued_ts"])+savings_period_days(conn)*86400, kid["id"]))
+        if auto_interest is not None:
+            _set_auto_interest(conn, auto_interest)
         if native:
             conn.execute("RELEASE rates_update")
             savepoint_open = False
         if owned:
-            conn.commit()
+            _commit(conn)
     except Exception:
         if native and conn.in_transaction:
             if savepoint_open:
@@ -157,14 +309,39 @@ def set_rates(conn, savings_weekly_pct=None, returns=None, savings_days=None, bo
     return True
 
 
+def _saved_carry(kid):
+    """Import legacy REAL exactly, without guessing away old rounding errors.
+
+    The REAL column remains a compatibility projection. New carries are rational
+    TEXT so no precision is lost at SQLite/JS boundaries or on restart. Binding
+    it to its anchor and REAL projection also detects legacy/direct-SQL edits.
+    """
+    encoded = kid["savings_interest_exact"] if "savings_interest_exact" in kid.keys() else None
+    if encoded:
+        value, anchor = encoded.split("@")
+        value = Fraction(value)
+        if (anchor == float(kid["savings_accrued_ts"]).hex()
+                and float(value) == kid["savings_interest_carry"]):
+            return value
+    return Fraction(kid["savings_interest_carry"])
+
+
+def _store_exact_carry(conn, kid_id, value, anchor):
+    conn.execute("UPDATE kids SET savings_interest_exact=? WHERE id=?",
+                 (f"{Fraction(value)}@{float(anchor).hex()}", kid_id))
+
+
 def _interest_exact(kid, now, weekly_rate):
-    weeks = max(0.0, (now - kid["savings_accrued_ts"]) / (7 * 86400))
-    return kid["savings_interest_carry"] + kid["savings_cents"] * weekly_rate * weeks
+    # Timestamps are persisted binary64 seconds: subtract their exact values,
+    # not rounded float differences. Never quantize elapsed fractional seconds.
+    seconds = max(Fraction(0), Fraction(now) - Fraction(kid["savings_accrued_ts"]))
+    rate = weekly_rate if isinstance(weekly_rate, Fraction) else Fraction(str(weekly_rate))
+    return _saved_carry(kid) + kid["savings_cents"] * rate * seconds / (7 * 86400)
 
 
 def pending_interest(kid, now, weekly_rate):
     """Simple continuous interest, rounded only for the existing collection rule."""
-    return int(round(_interest_exact(kid, now, weekly_rate)))
+    return max(0, int(round(_interest_exact(kid, now, weekly_rate))))
 
 
 def uncollected_principal(conn, kid_id):
@@ -244,6 +421,7 @@ def kid_state(conn, kid, now):
         "pending_cents": pending,
         "pending_allowance_cents": allow_cents,
         "pending_interest_cents": interest_cents,
+        "next_auto_interest_ts": kid["auto_interest_due_ts"] if auto_interest_enabled(conn) else None,
         "pending_bonds_cents": matured_gain,
         "allowance_enabled": allowance_enabled,
         "allowance_cents": alw_cents,
@@ -303,6 +481,7 @@ def _tx(conn, kid_id, now, kind, amount, note="", bond_id=None):
 # ---------------------------------------------------------------------------
 # Actions — these mutate and commit.
 # ---------------------------------------------------------------------------
+@_atomic_action
 def collect_rewards(conn, kid_id, kind="all"):
     """Collect rewards into the right place. `kind` is one of:
       allowance -> wallet, interest -> savings, invest -> wallet, or "all".
@@ -329,7 +508,7 @@ def collect_rewards(conn, kid_id, kind="all"):
             hero_delta += allow_cents
             _tx(conn, kid_id, now, "allowance", allow_cents, "Allowance")
 
-    if kind in ("all", "interest"):
+    if kind in ("all", "interest") and not auto_interest_enabled(conn):
         interest_cents = pending_interest(kid, now, savings_weekly_rate(conn))
         if interest_cents > 0:
             new_savings += interest_cents      # interest goes INTO savings
@@ -337,6 +516,7 @@ def collect_rewards(conn, kid_id, kind="all"):
             # reopen time already represented by that earned carry.
             savings_ts = max(now, savings_ts)
             savings_carry = 0
+            _store_exact_carry(conn, kid_id, 0, savings_ts)
             hero_delta += interest_cents
             _tx(conn, kid_id, now, "interest", interest_cents, "Savings interest")
 
@@ -359,10 +539,11 @@ def collect_rewards(conn, kid_id, kind="all"):
         conn.execute("UPDATE bonds SET collected=1 WHERE id=?", (b["id"],))
 
     _record_history(conn, kid_id, now)
-    conn.commit()
+    _commit(conn)
     return hero_delta
 
 
+@_atomic_action
 def move_to_savings(conn, kid_id, amount_cents):
     now = now_ts(conn)
     kid = conn.execute("SELECT * FROM kids WHERE id=?", (kid_id,)).fetchone()
@@ -371,50 +552,64 @@ def move_to_savings(conn, kid_id, amount_cents):
         return False, "Too little to save"
     # Bank any earned interest into the principal first, then add the deposit and
     # reset the clock, but never reopen an already-earned interval on a rewind.
-    new_savings = kid["savings_cents"] + pending_interest(kid, now, savings_weekly_rate(conn)) + amount
+    automatic = auto_interest_enabled(conn)
+    earned = _interest_exact(kid, now, savings_weekly_rate(conn))
+    interest = 0 if automatic else pending_interest(kid, now, savings_weekly_rate(conn))
+    new_savings = kid["savings_cents"] + interest + amount
     new_wallet = kid["wallet_cents"] - amount
     conn.execute(
-        "UPDATE kids SET wallet_cents=?, savings_cents=?, savings_accrued_ts=?, savings_interest_carry=0 "
+        "UPDATE kids SET wallet_cents=?, savings_cents=?, savings_accrued_ts=?, savings_interest_carry=? "
         "WHERE id=?",
-        (new_wallet, new_savings, max(now, kid["savings_accrued_ts"]), kid_id),
+        (new_wallet, new_savings, max(now, kid["savings_accrued_ts"]), float(earned) if automatic else 0, kid_id),
     )
+    _store_exact_carry(conn, kid_id, earned if automatic else 0, max(now, kid["savings_accrued_ts"]))
+    if interest:
+        _tx(conn, kid_id, now, "interest", interest, "Savings interest")
     _tx(conn, kid_id, now, "save", amount, "Moved to savings")
     _record_history(conn, kid_id, now)
-    conn.commit()
+    _commit(conn)
     return True, "Saved!"
 
 
+@_atomic_action
 def withdraw_savings(conn, kid_id, amount_cents):
     now = now_ts(conn)
     kid = conn.execute("SELECT * FROM kids WHERE id=?", (kid_id,)).fetchone()
-    savings_total = kid["savings_cents"] + pending_interest(kid, now, savings_weekly_rate(conn))  # incl. earned interest
+    automatic = auto_interest_enabled(conn)
+    earned = _interest_exact(kid, now, savings_weekly_rate(conn))
+    interest = 0 if automatic else pending_interest(kid, now, savings_weekly_rate(conn))
+    savings_total = kid["savings_cents"] + interest
     amount = min(amount_cents, savings_total)
     if amount <= 0:
         return False, "Nothing to take out"
     conn.execute(
-        "UPDATE kids SET wallet_cents=?, savings_cents=?, savings_accrued_ts=?, savings_interest_carry=0 "
+        "UPDATE kids SET wallet_cents=?, savings_cents=?, savings_accrued_ts=?, savings_interest_carry=? "
         "WHERE id=?",
         (kid["wallet_cents"] + amount, savings_total - amount,
-         max(now, kid["savings_accrued_ts"]), kid_id),
+         max(now, kid["savings_accrued_ts"]), float(earned) if automatic else 0, kid_id),
     )
+    _store_exact_carry(conn, kid_id, earned if automatic else 0, max(now, kid["savings_accrued_ts"]))
+    if interest:
+        _tx(conn, kid_id, now, "interest", interest, "Savings interest")
     _tx(conn, kid_id, now, "withdraw", amount, "Savings to wallet")
     _record_history(conn, kid_id, now)
-    conn.commit()
+    _commit(conn)
     return True, "Done!"
 
 
+@_atomic_action
 def spend(conn, kid_id, amount_cents, reason=""):
     """Spend coins from the wallet, recording what it was for."""
     now = now_ts(conn)
     kid = conn.execute("SELECT * FROM kids WHERE id=?", (kid_id,)).fetchone()
     amount = min(int(amount_cents), kid["wallet_cents"])
     if amount <= 0:
-        return False, "No coins to spend"
+        return False, "No money in your wallet to spend"
     conn.execute("UPDATE kids SET wallet_cents=? WHERE id=?",
                  (kid["wallet_cents"] - amount, kid_id))
     _tx(conn, kid_id, now, "spend", -amount, (reason or "").strip() or "Spent it")
     _record_history(conn, kid_id, now)
-    conn.commit()
+    _commit(conn)
     return True, "Spent!"
 
 
@@ -433,6 +628,7 @@ def transactions(conn, kid_id, limit=60):
 _AMOUNT_EDITABLE = {"gift", "allowance", "interest", "spend"}
 
 
+@_atomic_action
 def delete_transaction(conn, tx_id):
     """Delete a transaction AND reverse its effect on the kid's balances."""
     now = now_ts(conn)
@@ -471,10 +667,11 @@ def delete_transaction(conn, tx_id):
                  (w, s, kid["id"]))
     conn.execute("DELETE FROM transactions WHERE id=?", (tx_id,))
     _record_history(conn, kid["id"], now)
-    conn.commit()
+    _commit(conn)
     return True, "Deleted"
 
 
+@_atomic_action
 def edit_transaction(conn, tx_id, new_amount_cents, new_note):
     """Edit a transaction's note (always) and amount (money kinds only),
     adjusting the balance by the difference."""
@@ -486,7 +683,7 @@ def edit_transaction(conn, tx_id, new_amount_cents, new_note):
 
     if new_amount_cents is None or t["kind"] not in _AMOUNT_EDITABLE:
         conn.execute("UPDATE transactions SET note=? WHERE id=?", (note, tx_id))
-        conn.commit()
+        _commit(conn)
         return True, "Saved"
 
     kind, old = t["kind"], t["amount_cents"]
@@ -505,10 +702,11 @@ def edit_transaction(conn, tx_id, new_amount_cents, new_note):
     conn.execute("UPDATE transactions SET amount_cents=?, note=? WHERE id=?",
                  (new_signed, note, tx_id))
     _record_history(conn, kid["id"], now)
-    conn.commit()
+    _commit(conn)
     return True, "Saved"
 
 
+@_atomic_action
 def buy_bond(conn, kid_id, term_key, amount_cents):
     if term_key not in config.BONDS:
         return False, "Unknown bond"
@@ -516,7 +714,7 @@ def buy_bond(conn, kid_id, term_key, amount_cents):
     kid = conn.execute("SELECT * FROM kids WHERE id=?", (kid_id,)).fetchone()
     amount = min(amount_cents, kid["wallet_cents"])
     if amount < config.MIN_MOVE_CENTS:
-        return False, "Need more coins first"
+        return False, "Not enough money in your wallet"
     payout = int(round(amount * (1 + bond_return_pct(conn, term_key) / 100)))
     days = bond_days(conn, term_key)
     mature = now + days * 86400
@@ -529,14 +727,15 @@ def buy_bond(conn, kid_id, term_key, amount_cents):
     )
     _tx(conn, kid_id, now, "invest", amount, f"Invested ({duration_label(days)} lock)", cur.lastrowid)
     _record_history(conn, kid_id, now)
-    conn.commit()
+    _commit(conn)
     return True, "Locked in!"
 
 
 # ---------------------------------------------------------------------------
 # Dad / admin actions.
 # ---------------------------------------------------------------------------
-def gift(conn, kid_id, amount_cents, note="From Dad"):
+@_atomic_action
+def gift(conn, kid_id, amount_cents, note=""):
     """Add money to a kid's wallet, recording what it was for — the mirror image
     of `spend`, so a deposit carries a reason just like a purchase does."""
     now = now_ts(conn)
@@ -548,12 +747,13 @@ def gift(conn, kid_id, amount_cents, note="From Dad"):
         return False
     conn.execute("UPDATE kids SET wallet_cents=? WHERE id=?",
                  (kid["wallet_cents"] + amount, kid_id))
-    _tx(conn, kid_id, now, "gift", amount, (note or "").strip() or "From Dad")
+    _tx(conn, kid_id, now, "gift", amount, (note or "").strip() or "From " + parent_label(conn))
     _record_history(conn, kid_id, now)
-    conn.commit()
+    _commit(conn)
     return True
 
 
+@_atomic_action
 def add_kid(conn, name, emoji="🐣", color="#4f9dde"):
     now = now_ts(conn)
     conn.execute(
@@ -564,10 +764,14 @@ def add_kid(conn, name, emoji="🐣", color="#4f9dde"):
            VALUES (?,?,?,?,0,?,0,?,?)""",
         (name, color, emoji, config.STARTING_WALLET_CENTS, now, now, now),
     )
-    conn.commit()
+    if auto_interest_enabled(conn):
+        conn.execute("UPDATE kids SET auto_interest_due_ts=? WHERE auto_interest_due_ts IS NULL",
+                     (now+savings_period_days(conn)*86400,))
+    _commit(conn)
     return True
 
 
+@_atomic_action
 def update_kid(conn, kid_id, name=None, emoji=None, color=None):
     if name is not None:
         if not isinstance(name, str) or not name.strip() or len(name.strip()) > 80:
@@ -580,10 +784,11 @@ def update_kid(conn, kid_id, name=None, emoji=None, color=None):
         "UPDATE kids SET name=?, emoji=?, color=? WHERE id=?",
         (name or kid["name"], emoji or kid["emoji"], color or kid["color"], kid_id),
     )
-    conn.commit()
+    _commit(conn)
     return True
 
 
+@_atomic_action
 def remove_kid(conn, kid_id, confirm_name):
     """Permanently remove exactly the confirmed child and their dependent rows.
 
@@ -597,10 +802,11 @@ def remove_kid(conn, kid_id, confirm_name):
         return False
     conn.execute("DELETE FROM kids WHERE id=? AND name=?", (kid_id, confirm_name))
     removed = conn.execute("SELECT changes() AS removed").fetchone()["removed"] == 1
-    conn.commit()
+    _commit(conn)
     return removed
 
 
+@_atomic_action
 def set_allowance(conn, kid_id, amount_cents, period_days, enabled=True):
     """Set a kid's allowance controls.
 
@@ -621,7 +827,7 @@ def set_allowance(conn, kid_id, amount_cents, period_days, enabled=True):
             "allowance_period_days=? WHERE id=?",
             (amount_cents, period_days, kid_id),
         )
-        conn.commit()
+        _commit(conn)
         return True
 
     # Only a disabled -> enabled transition needs rescheduling. Existing
@@ -644,7 +850,7 @@ def set_allowance(conn, kid_id, amount_cents, period_days, enabled=True):
             "allowance_periods_paid=? WHERE id=?",
             (amount_cents, period_days, anchor, periods_paid, kid_id),
         )
-        conn.commit()
+        _commit(conn)
         return True
 
     conn.execute(
@@ -652,10 +858,11 @@ def set_allowance(conn, kid_id, amount_cents, period_days, enabled=True):
         "allowance_period_days=? WHERE id=?",
         (amount_cents, period_days, kid_id),
     )
-    conn.commit()
+    _commit(conn)
     return True
 
 
+@_atomic_action
 def all_kids_state(conn):
     now = now_ts(conn)
     kids = conn.execute("SELECT * FROM kids ORDER BY id").fetchall()
@@ -679,25 +886,51 @@ def dad_pin_set(conn):
 
 
 def check_dad_pin(conn, pin):
-    """True if no PIN is set (open) or the supplied PIN matches."""
+    """No unset-PIN bypass: setup must happen before parent mutations."""
+    import hmac
     stored = db.get_setting(conn, "dad_pin_hash")
-    if not stored:
-        return True
-    return bool(pin) and _hash_pin(pin) == stored
+    return bool(stored and isinstance(pin, str) and hmac.compare_digest(_hash_pin(pin), stored))
+
+
+def authorize_dad_pin(conn, pin):
+    """Durable, family-local five-attempt/60-second PIN throttle (real clock)."""
+    import time
+    if not isinstance(pin, str) or not pin:
+        return False  # Missing credentials are not a guessed PIN.
+    now = time.time()
+    until = float(db.get_setting(conn, 'parent_pin_retry_until', '0'))
+    if now < until:
+        return False
+    if check_dad_pin(conn, pin):
+        conn.execute("DELETE FROM settings WHERE key IN ('parent_pin_failures', 'parent_pin_retry_until')")
+        return True  # Keep the caller's writer lock through its protected mutation.
+    failures = int(db.get_setting(conn, 'parent_pin_failures', '0')) + 1 if until == 0 else 1
+    db.set_setting(conn, 'parent_pin_failures', failures)
+    db.set_setting(conn, 'parent_pin_retry_until', now + 60 if failures >= 5 else 0)
+    conn.commit()
+    return False
+
+
+def parent_label(conn):
+    return db.get_setting(conn, 'parent_label', 'Dad')
+
+
+def set_parent_label(conn, label):
+    import unicodedata
+    if (not isinstance(label, str) or not 1 <= len(label.strip()) <= 40
+            or any(unicodedata.category(c) in ('Cc', 'Cs')
+                   or unicodedata.bidirectional(c) in ('RLE', 'LRE', 'RLO', 'LRO', 'PDF', 'RLI', 'LRI', 'FSI', 'PDI') for c in label)):
+        raise ValueError('Use a name of 1–40 characters without control characters.')
+    db.set_setting(conn, 'parent_label', label.strip())
+    conn.commit()
 
 
 def set_dad_pin(conn, new_pin, current_pin=None):
-    """Set or change the PIN. If one already exists, current_pin must match.
-    Pass an empty/None new_pin to remove the PIN."""
-    if dad_pin_set(conn) and not check_dad_pin(conn, current_pin):
-        return False, "Wrong current PIN"
-    new_pin = (str(new_pin) if new_pin is not None else "").strip()
-    if new_pin == "":
-        conn.execute("DELETE FROM settings WHERE key='dad_pin_hash'")
-        conn.commit()
-        return True, "PIN removed"
-    if not (new_pin.isdigit() and 4 <= len(new_pin) <= 8):
+    """Set/change the PIN, never remove protection. Preserve existing hashes."""
+    if dad_pin_set(conn) and not authorize_dad_pin(conn, current_pin):
+        return False, "Wrong current PIN or too many attempts. Wait a minute and try again."
+    if not (isinstance(new_pin, str) and new_pin.isascii() and new_pin.isdigit() and 4 <= len(new_pin) <= 8):
         return False, "PIN must be 4–8 digits"
     db.set_setting(conn, "dad_pin_hash", _hash_pin(new_pin))
-    conn.commit()
+    _commit(conn)
     return True, "PIN saved"

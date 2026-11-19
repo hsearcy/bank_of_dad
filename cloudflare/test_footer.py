@@ -1,4 +1,9 @@
 """Actual Worker dashboard, disposable family banks and desktop/mobile Chromium."""
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / 'tests'))
+from parent_pin_ui import open_parent
+
 import os
 from pathlib import Path
 import sqlite3
@@ -70,7 +75,7 @@ def test_footer_and_compact_controls_in_workerd(runtime, width):
                 opener.click()
                 dialog.get_by_role('button', name='Close', exact=True).click()
                 expect(opener).to_be_focused()
-            page.locator('#dadBtn').click()
+            open_parent(page)
             section = page.get_by_role('region', name='This screen')
             height = section.bounding_box()['height']
             assert height < 150, height

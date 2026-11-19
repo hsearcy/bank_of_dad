@@ -86,5 +86,25 @@ class MoneyChartFrontendTests(unittest.TestCase):
         self.assertIn("expanded && window.innerWidth > 600", self.source)
 
 
+class WalletClarityFrontendTests(unittest.TestCase):
+    def test_total_and_wallet_keep_separate_sources(self):
+        source = (ROOT / 'static' / 'app.js').read_text()
+        card = source.split('function kidCard', 1)[1].split('function untilLabel', 1)[0]
+        self.assertIn('<div class="big">${dollars(k.owned_cents)}</div>', card)
+        self.assertIn('<div class="wallet-value">${dollars(k.wallet_cents)}</div>', card)
+        self.assertIn('Available to spend', card)
+        self.assertNotIn('coin-count', source)
+        self.assertEqual(2, card.count('class="btn-spend"'))  # wallet shortcut + original graph tool
+        self.assertIn('$$(".btn-spend", el).forEach(b => { b.onclick = () => openSpendModal(k); });', card)
+
+    def test_tour_copy_matches_preserved_control_selectors(self):
+        source = (ROOT / 'static' / 'experience.js').read_text()
+        self.assertIn("'.btn-save'", source)
+        self.assertIn("'.btn-bond'", source)
+        self.assertIn('Save money', source)
+        self.assertIn('Invest money', source)
+        self.assertNotIn('coins', source)
+
+
 if __name__ == "__main__":
     unittest.main()

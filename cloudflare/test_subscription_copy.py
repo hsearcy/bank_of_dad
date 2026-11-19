@@ -1,4 +1,9 @@
 """Responsive real workerd UI; disposable SQL and signed loopback OIDC only."""
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / 'tests'))
+from parent_pin_ui import open_parent
+
 import os
 from pathlib import Path
 
@@ -57,7 +62,7 @@ def test_responsive_subscription_copy_guest_saved_owner_and_pilot(tmp_path):
                                 expect(welcome).to_contain_text('No automatic charge')
                                 page.locator('#tryGuestBank').click()
                                 page.locator('#tourSkip').click()
-                        page.locator('#dadBtn').click()
+                        open_parent(page)
                         page.locator('.dad-account summary').click()
                         account = page.locator('.dad-account')
                         expect(account).to_contain_text(FREE)

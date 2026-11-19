@@ -213,7 +213,16 @@ def csrf(client):
 
 
 def post(client, path, origin, **kwargs):
-    return call(client, path, origin, method='POST', headers={'X-CSRF-Token': csrf(client)}, **kwargs)
+    # This helper denotes an authorized parent action. Exercise the real setup
+    # route and send the additional child guard; raw call() remains unauthenticated.
+    headers = {'X-CSRF-Token': csrf(client)}
+    if path.startswith('/api/admin/'):
+        status = call(client, '/api/admin/status', origin)
+        if status.status_code == 200 and not status.json['pin_set']:
+            assert call(client, '/api/admin/pin', origin, method='POST',
+                        headers=headers, json={'new_pin': '1234'}).json['ok']
+        headers['X-Dad-Pin'] = '1234'
+    return call(client, path, origin, method='POST', headers=headers, **kwargs)
 
 
 def signed_event(client, origin, event_id='evt_paid', customer='cus_1', event_type='customer.subscription.updated', **changes):
@@ -261,7 +270,7 @@ def test_full_parent_checkout_entitlement_bank_portal_logout(hosted_app):
     assert snapshot.json['kids'][0]['name'] == 'Nickname A'
     assert snapshot.json['kids'][0]['wallet_cents'] == 600
     assert snapshot.json['kids'][0]['savings_cents'] == 100
-    assert call(a, '/api/admin/status', origin).json == {'pin_set': False, 'hosted_parent': True}
+    assert call(a, '/api/admin/status', origin).json == {'pin_set': True}
     assert call(a, '/', origin).headers['Cache-Control'] == 'no-store'
     assert b'csrf-token' in call(a, '/', origin).data
     assert b'no fetch handler' in call(a, '/sw.js', origin).data
@@ -513,7 +522,7 @@ def test_concurrent_parent_balance_writes_are_serialized(hosted_app):
         client.set_cookie('__Host-bod-session', cookie, domain='bank.example.test')
         barrier.wait(timeout=10)
         result = call(client, '/api/admin/gift', origin, method='POST',
-                      headers={'X-CSRF-Token': token}, json={'kid_id': 1, 'amount_cents': 1})
+                      headers={'X-CSRF-Token': token, 'X-Dad-Pin': '1234'}, json={'kid_id': 1, 'amount_cents': 1})
         assert result.status_code == 200 and result.json['ok']
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(gift, range(8)))

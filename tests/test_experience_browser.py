@@ -1,4 +1,6 @@
 """Real self-hosted Chromium; synthetic banks, no hosted credentials or data."""
+from parent_pin_ui import open_parent
+
 import os
 from pathlib import Path
 import sqlite3
@@ -29,9 +31,7 @@ class ExperienceBrowserBase(test_realtime.AppServerCase):
         return page
 
     def open_dad(self, page):
-        page.locator('#dadBtn').click()
-        for digit in '1234':
-            page.locator(f'.keypad button[data-k="{digit}"]').click()
+        open_parent(page)
         page.locator('#dadPanel').wait_for(state='visible')
 
     def bank_snapshot(self):
@@ -40,6 +40,17 @@ class ExperienceBrowserBase(test_realtime.AppServerCase):
 
 
 class ExperienceBrowserTests(ExperienceBrowserBase):
+    def test_real_save_keeps_tour_and_finishes_information(self):
+        from tour_browser_flow import save_and_finish_tour
+        for width in (390, 1280):
+            page = self.page(width=width, height=667)
+            before = self.get_state()['kids'][0]
+            save_and_finish_tour(page, width)
+            after = self.get_state()['kids'][0]
+            self.assertEqual(before['owned_cents'], after['owned_cents'])
+            self.assertEqual(before['wallet_cents'] - 100, after['wallet_cents'])
+            self.assertEqual(before['savings_cents'] + 100, after['savings_cents'])
+
     def test_footer_dialogs_and_compact_screen_controls(self):
         for width in [390, 1280]:
             with self.subTest(width=width):
@@ -98,9 +109,8 @@ class ExperienceBrowserTests(ExperienceBrowserBase):
         page.evaluate('backgroundRefresh()')
         page.wait_for_function('document.querySelector(".reward-btn[data-kind=interest]").classList.contains("tour-target")')
         self.assertTrue(interest.evaluate('(el) => { const r=el.getBoundingClientRect(); return r.top >= 0 && r.bottom < document.querySelector("#productTour").getBoundingClientRect().top; }'))
-        page.locator('#tourNext').click()
-        page.locator('#tourNext').click()
-        page.locator('#tourNext').click()
+        for _ in range(5):
+            page.locator('#tourNext').click()
         self.assertFalse(page.locator('#productTour').is_visible())
         self.assertEqual(before, self.bank_snapshot())
 
@@ -112,7 +122,7 @@ class ExperienceBrowserTests(ExperienceBrowserBase):
         page.locator('#tourNext').click()
         self.assertIn('tour-target', page.locator('.btn-save').get_attribute('class'))
         text = page.locator('#tourText').inner_text()
-        self.assertIn('Save coins', text)
+        self.assertIn('Save money', text)
         self.assertNotIn('ready to try now', text)
         page.keyboard.press('Escape')
         self.assertEqual(before, self.bank_snapshot())
@@ -161,6 +171,7 @@ class ExperienceBrowserTests(ExperienceBrowserBase):
         self.assertIn('Paused', page.locator('#awakeStatus').inner_text())
         page.evaluate('window.dispatchEvent(new Event("pageshow"))')
         page.wait_for_function('document.querySelector("#awakeStatus").textContent.startsWith("Active")')
+        self.open_dad(page)  # pagehide correctly clears the shared-device PIN.
         # An off/on while the previous acquire is pending does not resurrect it.
         toggle.uncheck()
         page.evaluate('__wake.mode = "hold"')
@@ -231,12 +242,15 @@ class EmptyExperienceBrowserTests(ExperienceBrowserBase):
         page.locator('#replayTour').click()
         self.assertNotIn('Four', page.locator('#tourText').inner_text())
         page.locator('#tourNext').click()
-        self.assertIn('1 of 1', page.locator('#tourTitle').inner_text())
+        self.assertIn('1 of 2', page.locator('#tourTitle').inner_text())
         self.assertIn('add your first kid', page.locator('#tourText').inner_text())
         self.assertEqual('dadBtn', page.locator('.tour-target').get_attribute('id'))
-        self.assertEqual('Done', page.locator('#tourNext').inner_text())
+        self.assertEqual('Next', page.locator('#tourNext').inner_text())
         page.evaluate('backgroundRefresh()')
         page.wait_for_function('document.querySelector("#dadBtn").classList.contains("tour-target")')
+        page.locator('#tourNext').click()
+        self.assertIn('A few things to know', page.locator('#tourTitle').inner_text())
+        self.assertEqual('Done', page.locator('#tourNext').inner_text())
         page.locator('#tourNext').focus()
         page.keyboard.press('Enter')
         self.assertFalse(page.locator('#productTour').is_visible())

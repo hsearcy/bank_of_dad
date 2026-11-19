@@ -1,4 +1,6 @@
 """Real self-hosted phone UI, PIN and push acceptance on disposable state."""
+from parent_pin_ui import open_parent
+
 import os
 import unittest
 
@@ -29,9 +31,7 @@ class RatePeriodsBrowserTests(test_realtime.AppServerCase):
                     page.goto(self.origin)
                     page.wait_for_function('window.__sockets.some(s => s.readyState === 1)')
                 self.assertFalse(self.post('/api/admin/rates', {'savings_period_days': 1}, pin='wrong')['ok'])
-                a.locator('#dadBtn').click()
-                for digit in '1234':
-                    a.locator(f'.keypad button[data-k="{digit}"]').click()
+                open_parent(a)
                 expect(a.locator('.period-sav')).to_have_value('7')
                 a.locator('#saveRates').click()
                 expect(a.locator('.rate-status')).to_have_text('Saved ✓')
@@ -50,7 +50,7 @@ class RatePeriodsBrowserTests(test_realtime.AppServerCase):
                 whatif = b.evaluate('whatIfProjection({}, [{t:0,total:10000},{t:14*86400,total:10000}], {save:10000,m1:0,m3:0}).at(-1).total')
                 self.assertAlmostEqual(whatif, 10412.5)
                 a.locator('#closeDad').click()
-                a.locator('#dadBtn').click()
+                open_parent(a)
                 expect(a.locator('.period-sav')).to_have_value('14')
                 expect(a.locator('.rate-bond[data-key="1mo"]')).to_have_value('33.25')
                 self.assertEqual([], errors)

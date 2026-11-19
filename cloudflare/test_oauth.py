@@ -3,6 +3,11 @@
 The provider below is deliberately synthetic, not Google acceptance. Signatures,
 PKCE, OAuth HTTP, browser cookies, bank routes and revocations are real.
 """
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / 'tests'))
+from parent_pin_ui import open_parent
+
 import base64
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -125,6 +130,16 @@ def client(runtime):
     return httpx.Client(base_url=runtime.origin, timeout=45, follow_redirects=False)
 
 
+def setup_parent(c, runtime):
+    token = csrf(c)
+    status = c.get('/api/admin/status')
+    assert status.status_code == 200
+    if not status.json()['pin_set']:
+        assert c.post('/api/admin/pin', json={'new_pin': '1234'},
+                      headers={'Origin': runtime.origin, 'X-CSRF-Token': token}).json()['ok']
+    c.headers['X-Dad-Pin'] = '1234'
+
+
 def start_login(c, provider):
     r = c.get('/auth/login')
     assert r.status_code == 302, r.text
@@ -160,6 +175,7 @@ def test_claim_real_bank_and_directory_persistence(oauth):
     runtime, provider = oauth
     with client(runtime) as c:
         old_csrf = csrf(c)
+        setup_parent(c, runtime)
         old = c.cookies['bod-local-session']
         assert c.post('/api/admin/gift', json=dict(kid_id=1, amount_cents=321),
                       headers={'Origin': runtime.origin, 'X-CSRF-Token': old_csrf}).status_code == 200
@@ -252,6 +268,7 @@ def test_collision_explicit_choice_preserves_both_banks_and_return(oauth):
         saved_family = owner.cookies['bod-local-session'].split('.')[0]
         token = csrf(guest)
         original = guest.cookies['bod-local-session']
+        setup_parent(guest, runtime)
         guest.post('/api/admin/gift', json=dict(kid_id=1, amount_cents=123),
                    headers={'Origin': runtime.origin, 'X-CSRF-Token': token}).raise_for_status()
         result = login(guest, provider, 'collision-owner')
@@ -330,7 +347,7 @@ def test_real_frontend_claim_collision_and_idle_socket_revocation(oauth):
         assert second.evaluate('document.documentElement.scrollWidth <= innerWidth')
         second.get_by_role('button', name='Open my existing family bank').click()
         second.wait_for_url(runtime.origin + '/')
-        second.locator('#dadBtn').click()
+        open_parent(second)
         second.locator('.dad-account summary').click()
         second.get_by_role('button', name='Return to this device’s trial').click()
         second.wait_for_url(runtime.origin + '/')
@@ -401,6 +418,7 @@ def test_provider_wait_does_not_hold_durable_sql_transaction(oauth):
     runtime, provider = oauth
     with client(runtime) as c, client(runtime) as other:
         token = csrf(c)
+        setup_parent(c, runtime)
         provider.subject, provider.mode = 'slow-provider-parent', 'slow'
         callback = start_login(c, provider)
         provider.token_entered.clear()
