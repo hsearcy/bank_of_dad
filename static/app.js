@@ -571,12 +571,8 @@ function kidCard(k) {
       </div>
     </div>
     <div class="wallet" role="group" aria-label="${esc(k.name)}'s wallet">
-      <div class="wallet-balance">
-        <div class="wallet-label">💵 Wallet <span>Available to spend</span></div>
-        <div class="wallet-value">${dollars(k.wallet_cents)}</div>
-        <div class="wallet-note">Savings &amp; investments are separate.</div>
-      </div>
-      <button class="btn-spend" title="Spend from wallet" aria-label="Spend from ${esc(k.name)}'s wallet">💸 Spend</button>
+      <div class="wallet-label">💵 Wallet <span>Available to spend</span></div>
+      <div class="wallet-value">${dollars(k.wallet_cents)}</div>
     </div>
     ${moneyChart(k)}
     <div class="chart-controls">

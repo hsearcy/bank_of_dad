@@ -8,7 +8,7 @@ const BodExperience = (() => {
   const allSteps = [
     ['#dadBtn', 'Your parent dashboard', 'Open the parent controls to add your kids, give money, set allowance and adjust rates. You can also save / sync a hosted bank there.'],
     [() => find('.reward-btn[data-kind="interest"]') || find('.btn-save'), 'Collect a little growth', 'Tap Savings Interest when it’s ready. It goes back into savings, so future interest can earn interest too.'],
-    ['.btn-save', 'Give saving a try', 'Move money from the wallet into savings, or take savings out again. You choose the amount. The tour itself moves nothing; using the real controls saves your changes.'],
+    ['.btn-save', 'Give saving a try', 'Move money from the wallet into savings, or take savings out again. You choose the amount.'],
     ['.btn-bond', 'Practice patience', 'Invest money locks money for a chosen term. When it’s ready, collect the payout. Compare saving and investing on the growth chart.'],
     ['.wallet-actions', 'Four tools below the graph', 'Spend records a purchase. What if previews possible growth without moving money. History shows past activity. Expand graph opens a bigger view. Try any tool — your tour will wait.'],
     [null, 'A few things to know', 'This is not a real bank. The founder uses it to track his own kids’ real balances, but this service is just a tracker.\n\nAn always-on shared tablet works especially well, but is optional.\n\nKids currently claim interest themselves, so they can feel their money grow.\n\nDefault savings and investment rates are intentionally VERY HIGH so young kids can see growth. Parents can change them in the parent dashboard.']

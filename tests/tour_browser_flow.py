@@ -9,6 +9,7 @@ def save_and_finish_tour(page, width):
     for _ in range(3):
         page.locator('#tourNext').click()
     expect(page.locator('#tourTitle')).to_contain_text('Give saving a try')
+    expect(page.locator('#tourText')).to_have_text('Move money from the wallet into savings, or take savings out again. You choose the amount.')
     title = page.locator('#tourTitle').inner_text()
     page.locator('.btn-save').first.click()
     expect(page.locator('#modal')).to_be_visible()
