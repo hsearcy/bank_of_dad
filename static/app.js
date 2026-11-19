@@ -1604,7 +1604,6 @@ startLiveUpdates();
   // PIN setup is required on first parent-control open, not guest onboarding.
   const welcome = document.querySelector('#guestWelcome');
   if (welcome) {
-    document.querySelector('#sampleInterestNote').hidden = !(STATE.kids[0]?.pending_interest_cents > 0);
     const dismiss = async (offerTour = false) => {
       const response = await fetch('/auth/welcome', {method: 'POST', headers: {
         'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content
