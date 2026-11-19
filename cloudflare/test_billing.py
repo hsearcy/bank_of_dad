@@ -46,6 +46,9 @@ class StripeFixture:
         self.calls, self.customers, self.subs, self.checkouts = [], {}, {}, {}
         self.invoices, self.payments, self.intents = {}, {}, {}
         self.keys = {}
+        self.key_params = {}
+        self.checkout_lost_responses = 0
+        self.session_list_fail = False
         self.fail = False
         self.checkout_failures = 0
         self.slow = False
@@ -74,6 +77,8 @@ class StripeFixture:
                 if owner.fail:
                     return self.reply({'error': {'message': 'disposable failure'}}, 503)
                 if key and key in owner.keys:
+                    if owner.key_params.get(key) != q:
+                        return self.reply({'error': {'type': 'idempotency_error', 'message': 'Keys reused with changed parameters'}}, 409)
                     return self.reply(owner.keys[key])
                 if path.path == '/v1/account':
                     obj = dict(id=owner.account)
@@ -114,6 +119,17 @@ class StripeFixture:
                     obj = owner.intents[path.path.rsplit('/', 1)[1]]
                 elif path.path == '/v1/prices/price_fixture':
                     obj = owner.price
+                elif path.path == '/v1/checkout/sessions' and method == 'GET':
+                    if owner.session_list_fail:
+                        return self.reply({'error': {'type': 'api_error'}}, 503)
+                    assert q['limit'] == '100' and 'status' not in q
+                    rows = [s for s in reversed(list(owner.checkouts.values())) if s['customer'] == q['customer']
+                            and s.get('created', 0) >= int(q.get('created[gte]', 0))]
+                    if q.get('starting_after'):
+                        rows = rows[[s['id'] for s in rows].index(q['starting_after']) + 1:]
+                    obj = dict(data=rows[:1], has_more=len(rows) > 1)
+                elif path.path.endswith('/line_items'):
+                    obj = dict(data=[dict(price=dict(id='price_fixture'), quantity=1)], has_more=False)
                 elif path.path == '/v1/checkout/sessions' and method == 'POST':
                     assert self.headers['Content-Type'] == 'application/x-www-form-urlencoded'
                     if q.get('managed_payments[enabled]') != 'false' or owner.checkout_failures:
@@ -125,9 +141,12 @@ class StripeFixture:
                             'on this session, you can pass managed_payments[enabled]=false.'}}, 400)
                     assert q['mode'] == 'subscription' and q['line_items[0][price]'] == 'price_fixture'
                     assert q['line_items[0][quantity]'] == '1'
-                    assert not any('trial' in k or 'metadata' in k for k in q)
+                    assert not any('trial' in k for k in q)
                     obj = dict(id='cs_fixture' + str(len(owner.checkouts) + 1), customer=q['customer'],
-                        livemode=owner.live, status='open', expires_at=int(time.time()) + 1800,
+                        livemode=owner.live, mode='subscription', created=int(time.time()),
+                        metadata={k[9:-1]: v for k, v in q.items() if k.startswith('metadata[')},
+                        success_url=q['success_url'], cancel_url=q['cancel_url'],
+                        status='open', expires_at=int(time.time()) + 1800,
                         url='https://checkout.stripe.com/c/pay/fixture')
                     owner.checkouts[obj['id']] = obj
                 elif path.path.startswith('/v1/checkout/sessions/'):
@@ -139,6 +158,10 @@ class StripeFixture:
                     return self.reply({}, 404)
                 if key:
                     owner.keys[key] = obj
+                    owner.key_params[key] = q
+                if method == 'POST' and path.path == '/v1/checkout/sessions' and owner.checkout_lost_responses:
+                    owner.checkout_lost_responses -= 1
+                    return self.reply({'error': {'type': 'api_error'}}, 503)
                 return self.reply(obj)
         self.http = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         self.origin = f'http://127.0.0.1:{self.http.server_port}'
@@ -279,6 +302,7 @@ def test_checkout_portal_and_authority(billing):
         assert record(runtime, c)[1]['trial_until'] == before['trial_until']
         # Recovery across all pages, even after Checkout has expired.
         stripe.checkouts['cs_fixture1']['expires_at'] = int(time.time()) - 100
+        stripe.checkouts['cs_fixture1']['status'] = 'expired'
         stripe.subs[family['customer']] = [subscription(family['customer'], 'canceled', id='sub_terminal'),
                                           subscription(family['customer'], 'past_due', id='sub_retry')]
         assert post(c, runtime, '/billing/checkout', token).headers['location'].startswith('https://billing.stripe.com/')

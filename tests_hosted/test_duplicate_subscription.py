@@ -15,6 +15,7 @@ def test_expired_checkout_checks_current_subscriptions(hosted_app, status):
     assert post(client, '/billing/checkout', origin).status_code == 303
     with host.connect() as conn:
         conn.execute('UPDATE families SET checkout_expires=?', (time.time() - 86400,))
+    state['checkout_status'] = 'expired'
     state['subscriptions']['cus_1'] = [subscription(status=status)]
     result = post(client, '/billing/checkout', origin)
     assert result.status_code == 303
