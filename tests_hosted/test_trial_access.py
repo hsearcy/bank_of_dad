@@ -34,7 +34,7 @@ def test_signup_trial_stays_fixed_and_cannot_be_asserted_by_client(hosted_app):
     assert login(a, state, origin).status_code == 302
     row = family(host)
     assert before <= row['trial_started'] <= time.time()
-    assert row['trial_until'] - row['trial_started'] == 7 * 24 * 60 * 60
+    assert row['trial_until'] - row['trial_started'] == 31 * 24 * 60 * 60
     assert not state['customers'] and not state['checkouts']
     assert call(a, '/', origin).status_code == 200
     assert call(a, '/api/state', origin).status_code == 200
@@ -161,7 +161,7 @@ def test_migration_interruption_rolls_back_then_restart_completes(tmp_path):
         conn.close()
     with sqlite3.connect(path) as restarted:
         migrate(restarted, now=200)
-        assert restarted.execute('SELECT paid_until, trial_started, trial_until, free_access FROM families').fetchone() == (12345, 200, 605000, 0)
+        assert restarted.execute('SELECT paid_until, trial_started, trial_until, free_access FROM families').fetchone() == (12345, 200, 200 + 31 * 86400, 0)
 
 
 def test_legacy_migration_preserves_paid_and_bank_data_and_runs_once(tmp_path):
@@ -184,7 +184,7 @@ def test_legacy_migration_preserves_paid_and_bank_data_and_runs_once(tmp_path):
         conn.row_factory = sqlite3.Row
         row = dict(conn.execute('SELECT * FROM families').fetchone())
         assert row['paid_until'] == 9999999999 and row['customer'] == 'cus_old'
-        assert row['trial_started'] == 1000 and row['trial_until'] == 1000 + 604800
+        assert row['trial_started'] == 1000 and row['trial_until'] == 1000 + 31 * 86400
         assert access_status(row, 1000)['kind'] == 'paid'
         conn.commit()
         migrate(conn, now=2000)

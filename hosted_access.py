@@ -13,13 +13,14 @@ import sqlite3
 import time
 from urllib.parse import urlsplit
 
-TRIAL_SECONDS = 7 * 24 * 60 * 60
+TRIAL_SECONDS = 31 * 24 * 60 * 60
+LEGACY_TRIAL_SECONDS = 7 * 24 * 60 * 60
 
 
 def migrate(conn, now=None):
     """Add access fields atomically, preserving billing and every family database.
 
-    Pre-trial families get one migration-time week, not an inferred signup date.
+    Pre-trial families get one migration-time trial, not an inferred signup date.
     The column addition and backfill commit together, so restarts never reset it.
     Caller owns commit/rollback; the writer lock also serializes concurrent startup.
     """
@@ -30,6 +31,8 @@ def migrate(conn, now=None):
         conn.execute('ALTER TABLE families ADD COLUMN trial_started REAL NOT NULL DEFAULT 0')
         conn.execute('ALTER TABLE families ADD COLUMN trial_until REAL NOT NULL DEFAULT 0')
         conn.execute('UPDATE families SET trial_started=?, trial_until=?', (stamp, stamp + TRIAL_SECONDS))
+    if 'trial_policy' not in columns:
+        conn.execute('ALTER TABLE families ADD COLUMN trial_policy INTEGER NOT NULL DEFAULT 0')
     if 'free_access' not in columns:
         conn.execute('ALTER TABLE families ADD COLUMN free_access INTEGER NOT NULL DEFAULT 0 CHECK(free_access IN (0,1))')
     if 'billing_reconciled_at' not in columns:
@@ -39,6 +42,23 @@ def migrate(conn, now=None):
         action TEXT NOT NULL CHECK(action IN ('grant','revoke')),
         reason TEXT NOT NULL, operator TEXT NOT NULL, created REAL NOT NULL
     )''')
+
+
+def migrate_family_trial(conn, table, family):
+    """One atomic lazy upgrade; caller owns the transaction.
+
+    Only the exact former default has a known original start. Zero/invalid,
+    shortened and custom durations stay unchanged, but are marked considered.
+    No wall clock, payment state, session or external service is involved.
+    """
+    if table not in ('families', '_bod_family'):
+        raise ValueError('Unsupported trial table')
+    conn.execute(f'''UPDATE {table} SET trial_until=CASE
+        WHEN trial_started > 0 AND trial_started < 253399536000
+         AND trial_until = trial_started + ? THEN trial_started + ?
+        ELSE trial_until END, trial_policy=1
+        WHERE id=? AND trial_policy=0''',
+        (LEGACY_TRIAL_SECONDS, TRIAL_SECONDS, family))
 
 
 def access_status(row, now=None):

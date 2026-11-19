@@ -45,14 +45,14 @@ def test_no_card_onboarding_dad_access_expiry_and_restore(hosted_app, width):
             assert state['customers'] == state['checkouts'] == []
             assert page.locator('.topbar a').count() == 0
             page.locator('#dadBtn').click()
-            sync_api.expect(page.locator('.dad-account summary')).to_contain_text('Free trial · 7d left')
+            sync_api.expect(page.locator('.dad-account summary')).to_contain_text('Free trial · 31d left')
             assert not page.locator('.dad-account').evaluate('(el) => el.open')
             page.locator('#newKidName').fill('Trial Nickname')
             page.locator('#addKidBtn').click()
             sync_api.expect(page.locator('.dk-head')).to_contain_text('Trial Nickname')
             page.locator('.dad-account summary').click()
             sync_api.expect(page.get_by_role('button', name='Subscribe with Stripe')).to_be_visible()
-            sync_api.expect(page.get_by_text('No card needed', exact=False)).to_be_visible()
+            sync_api.expect(page.get_by_text('Your free trial ends', exact=False)).to_be_visible()
             assert page.locator('#dadPanel .panel-card').evaluate('(el) => el.scrollWidth <= el.clientWidth')
             capture(page, 'dad-trial')
             page.locator('#closeDad').click()

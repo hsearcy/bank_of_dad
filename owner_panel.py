@@ -48,7 +48,7 @@ class OwnerPanel:
         if not self.owners:
             abort(404)
         with self.host.connect() as conn:
-            row = conn.execute('SELECT * FROM families WHERE id=?', (session.get('family'),)).fetchone()
+            row = self.host.family_record(conn, session.get('family'))
         # Family associations are installed ONLY by the verified OIDC callback or
         # its server-owned verified bank-choice continuation. Never trust a body,
         # email, client role, local Dad PIN or an anonymous device capability.
@@ -86,7 +86,13 @@ class OwnerPanel:
                 (SELECT created FROM access_audit WHERE family=f.id ORDER BY id DESC LIMIT 1) AS changed_at
                 FROM families f WHERE id LIKE ? ORDER BY id LIMIT 51 OFFSET ?""",
                 (query + '%', (page - 1) * 50)).fetchall()
-        families = [dict(row, status=access_status(row, now)) for row in rows[:50]]
+            # Upgrade only this page's server-selected families, then refresh the
+            # whitelisted dates; do not expose the full family record.
+            upgraded = []
+            for row in rows[:50]:
+                current = self.host.family_record(conn, row['id'])
+                upgraded.append(dict(row, trial_until=current['trial_until']))
+        families = [dict(row, status=access_status(row, now)) for row in upgraded]
         return render_template('owner.html', families=families, query=query, page=page,
                                has_more=len(rows) > 50, date_label=date_label, error=error,
                                updated=date_label(now), saved=request.args.get('saved') == '1'), code

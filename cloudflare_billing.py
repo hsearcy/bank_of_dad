@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 import js
 from workers import fetch
+from hosted_access import migrate_family_trial
 from cloudflare_auth import response
 from cloudflare_security import runtime_mode, stripe_config
 
@@ -352,6 +353,13 @@ class FamilyBilling:
         """A cached sandbox/foreign-account entitlement is never public payment."""
         if not family:
             return family
+        columns = {row['name'] for row in c.execute('PRAGMA table_info(_bod_family)')}
+        if 'trial_policy' not in columns:
+            c.execute('ALTER TABLE _bod_family ADD COLUMN trial_policy INTEGER NOT NULL DEFAULT 0')
+        # Includes authentication, owner projections, idle publish and alarm reads.
+        if 'trial_policy' not in family or family['trial_policy'] == 0:
+            migrate_family_trial(c, '_bod_family', family['id'])
+            family = c.execute('SELECT * FROM _bod_family WHERE singleton=1').fetchone()
         if runtime_mode(self.env) == 'public' or str(getattr(self.env, 'BOD_BILLING_MODE', '')) == 'live':
             valid = False
             try:
@@ -380,7 +388,7 @@ class FamilyBilling:
 
     async def billing_http(self, request, token, raw):
         if str(getattr(self.env, 'BOD_BILLING_MODE', 'unavailable')) == 'unavailable':
-            return response('Payments are unavailable in this pilot. Your original seven-day trial is unchanged. '
+            return response('Payments are unavailable in this pilot. Your original 31-day trial is unchanged. '
                             '<a href="/billing">Family access and support</a>', 503)
         if request.method != 'POST':
             return response('Method not allowed', 405)

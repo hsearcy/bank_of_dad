@@ -55,7 +55,7 @@ def test_retained_session_migrates_only_on_authorized_bank_open(hosted_app, role
     family, path = legacy_family(host, now)
     capability = secrets.token_urlsafe(32)
     with host.connect() as conn:
-        conn.execute('INSERT INTO families(id,issuer,subject,trial_started,trial_until,guest_hash) VALUES(?,?,?,?,?,?)',
+        conn.execute('INSERT INTO families(id,issuer,subject,trial_started,trial_until,guest_hash,trial_policy) VALUES(?,?,?,?,?,?,1)',
                      (family, 'urn:bank-of-dad:guest' if role == 'guest' else host.issuer,
                       family, now - 86400, now + 86400, digest(capability) if role == 'guest' else None))
         association = dict(conn.execute('SELECT * FROM families WHERE id=?', (family,)).fetchone())

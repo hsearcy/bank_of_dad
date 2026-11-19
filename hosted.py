@@ -19,7 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 from flask import abort, g, jsonify, redirect, render_template, request, session
 
 import db
-from hosted_access import TRIAL_SECONDS, access_status, migrate, support_destination
+from hosted_access import TRIAL_SECONDS, access_status, migrate, migrate_family_trial, support_destination
 
 
 def digest(value):
@@ -185,6 +185,13 @@ class Hosted:
         finally:
             conn.close()
 
+    def family_record(self, conn, family):
+        row = conn.execute('SELECT * FROM families WHERE id=?', (family,)).fetchone()
+        if row is not None and row['trial_policy'] == 0:
+            migrate_family_trial(conn, 'families', family)
+            row = conn.execute('SELECT * FROM families WHERE id=?', (family,)).fetchone()
+        return row
+
     def family_path(self, family):
         if not re.fullmatch(r'[0-9a-f]{32}', family):
             raise ValueError('Invalid server-owned family identifier')
@@ -223,8 +230,8 @@ class Hosted:
                 conn.close()
             with self.connect() as conn:
                 conn.execute('''INSERT INTO families
-                    (id, issuer, subject, trial_started, trial_until, guest_hash)
-                    VALUES (?, ?, ?, ?, ?, ?)''',
+                    (id, issuer, subject, trial_started, trial_until, guest_hash, trial_policy)
+                    VALUES (?, ?, ?, ?, ?, ?, 1)''',
                     (family, 'urn:bank-of-dad:guest', family, now, now + TRIAL_SECONDS,
                      digest(capability)))
         except Exception:
@@ -248,7 +255,7 @@ class Hosted:
             self.start_guest()
             family = session['family']
         with self.connect() as conn:
-            row = conn.execute('SELECT * FROM families WHERE id=?', (family,)).fetchone()
+            row = self.family_record(conn, family)
         if not self.valid_session(row, session):
             if request.path.startswith('/api/'):
                 return jsonify(error='Sign in required', login='/auth/login'), 401
@@ -300,7 +307,7 @@ class Hosted:
         if not current or current.get('family') != family:
             return False
         with self.connect() as conn:
-            row = conn.execute('SELECT * FROM families WHERE id=?', (family,)).fetchone()
+            row = self.family_record(conn, family)
         return bool(self.valid_session(row, current) and access_status(row)['active'])
 
     def headers(self, response):
@@ -313,7 +320,7 @@ class Hosted:
 
     def login(self):
         with self.connect() as conn:
-            row = conn.execute('SELECT * FROM families WHERE id=?', (session.get('family'),)).fetchone()
+            row = self.family_record(conn, session.get('family'))
         values = {}
         if 'device_bank' in session:
             values['device_bank'] = session['device_bank']
@@ -371,7 +378,7 @@ class Hosted:
             return 'Sign-in failed. Please try again.', 400
         with self.connect() as conn:
             conn.execute('BEGIN IMMEDIATE')
-            guest = conn.execute('SELECT * FROM families WHERE id=?', (login_state['guest_family'],)).fetchone()
+            guest = self.family_record(conn, login_state['guest_family'])
             can_claim = (guest is not None and guest['guest_hash'] is not None
                          and guest['guest_hash'] == login_state['guest_hash']
                          and session.get('family') == guest['id'] and self.valid_session(guest, session))
@@ -397,7 +404,7 @@ class Hosted:
             else:
                 # Only the first creation starts a trial. Login and client inputs
                 # can never reset these server-owned timestamps.
-                conn.execute('INSERT OR IGNORE INTO families(id, issuer, subject, trial_started, trial_until) VALUES (?, ?, ?, ?, ?)',
+                conn.execute('INSERT OR IGNORE INTO families(id, issuer, subject, trial_started, trial_until, trial_policy) VALUES (?, ?, ?, ?, ?, 1)',
                              (secrets.token_hex(16), self.issuer, claims['sub'], now, now + TRIAL_SECONDS))
                 family = conn.execute('SELECT id FROM families WHERE issuer=? AND subject=?',
                                       (self.issuer, claims['sub'])).fetchone()['id']
@@ -435,7 +442,7 @@ class Hosted:
         if not device:
             return redirect('/')
         with self.connect() as conn:
-            row = conn.execute('SELECT * FROM families WHERE id=?', (device['family'],)).fetchone()
+            row = self.family_record(conn, device['family'])
         if not self.valid_session(row, device):
             session.pop('device_bank', None)
             return redirect('/')

@@ -180,8 +180,8 @@ def test_list_search_pagination_and_clock_derived_status(owner_app, monkeypatch)
     now = time.time()
     with host.connect() as conn:
         for i in range(51):
-            conn.execute('''INSERT INTO families(id, issuer, subject, trial_started, trial_until, paid_until)
-                         VALUES (?, ?, ?, ?, ?, ?)''',
+            conn.execute('''INSERT INTO families(id, issuer, subject, trial_started, trial_until, paid_until, trial_policy)
+                         VALUES (?, ?, ?, ?, ?, ?, 1)''',
                          (f'{i:032x}', 'https://accounts.google.com', f'synthetic-{i}', now - 100, now + 100, now + 50 if i == 0 else 0))
     before = snapshot(host)
     page = call(client, '/owner', origin)
@@ -268,7 +268,7 @@ def test_reconciliation_date_migration_is_additive_atomic_and_idempotent(tmp_pat
         conn.fail = False
         with conn:
             migrate(conn, now=400)
-        assert conn.execute('SELECT * FROM families').fetchone() == ('a' * 32, 12345, 100, 200, 1, None)
+        assert conn.execute('SELECT * FROM families').fetchone() == ('a' * 32, 12345, 100, 200, 1, 0, None)
         after = '\n'.join(conn.iterdump())
         with conn:
             migrate(conn, now=500)

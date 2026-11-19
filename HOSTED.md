@@ -46,7 +46,7 @@ verified stable issuer/subject identity. It never links accounts by email.
 2. In a **Stripe sandbox/test account first**, create a product with one active,
    recurring USD **999 cents / year**, quantity one, Price. Configure the Stripe
    customer portal to allow payment-method updates and cancellation at period end,
-   without plan/quantity switching. The app's no-card week is local access, not
+   without plan/quantity switching. The app's no-card 31-day trial is local access, not
    a Stripe trial. No Stripe trial, discounts or tax-address collection
    are requested by this implementation. Any legally required tax/privacy/terms
    configuration remains the operator's responsibility; do not assume it away.
@@ -95,7 +95,7 @@ verified stable issuer/subject identity. It never links accounts by email.
 6. Visit `/`: the actual dashboard opens immediately with Sample Kid ($5 spending,
    $1 savings, $1 invested) and a dismissible welcome. There is no sign-in or
    payment screen first. Changes are real and persist in the same browser. A new
-   family can use the bank for **7 days**, with no sign-up or payment method.
+   family can use the bank for **31 days**, with no sign-up or payment method.
    **Save / sync** in the welcome or Dad controls optionally claims the whole bank
    through the configured sign-in provider; it keeps every kid, balance, bond,
    setting and history row, along with the original trial deadline.
@@ -108,7 +108,7 @@ verified stable issuer/subject identity. It never links accounts by email.
    banks must be saved before Checkout; saved families can subscribe or refresh
    billing. There is no app-imposed deadline for saving an expired anonymous bank:
    it stays claimable while this browser retains its token and the server retains
-   its session and bank data. Saving does not restart the free week.
+   its session and bank data. Saving does not restart the free trial.
    Choosing Subscribe opens Stripe Checkout for the paid **$9.99 USD/year** plan;
    it charges only after explicit confirmation, not automatically at trial end.
    Webhook reconciliation activates paid access. If delivery is delayed, the
@@ -153,7 +153,7 @@ procedure. Keep credentials/mode consistent and plan any account migration.
   directory; the secret remains inside the server-side browser session. No
   capability appears in URLs, localStorage, HTML or WebSocket frames. HTTP and
   idle WebSockets check the capability and the shared trial/paid/free access policy.
-  The trial ends after seven days; the capability has no separate recovery cutoff.
+  The trial ends after 31 days; the capability has no separate recovery cutoff.
   Cookie clearing/eviction, browser switching, sign-out or loss of server session
   storage can lose access to an unclaimed bank; there is no anonymous recovery by
   family ID. Browsers may cap cookie persistence despite the requested persistent
@@ -227,7 +227,7 @@ procedure. Keep credentials/mode consistent and plan any account migration.
   in restores that same family's original trial/subscription, never a new trial.
   The real server UTC clock controls expiry (keep it synchronized).
 - **Safe upgrade:** on first startup of this version, existing pre-trial families
-  receive a one-time seven-day migration-time grace week because the old schema
+  receive a one-time 31-day migration-time grace period because the old schema
   has no creation date. Schema changes and backfill are one SQLite transaction,
   under a writer lock; restarting does not reset dates. Existing `paid_until`,
   customer/Checkout mappings, identities and every family bank file are preserved.
@@ -414,7 +414,7 @@ tests separately exercise the PIN, animations, input preservation and polling
 fallback, and can run without any hosted runtime dependencies.
 
 Anonymous tests cover real sample provisioning, mutations/reload, cross-browser
-isolation, exact full-bank preservation through signup, a fixed seven-day trial
+isolation, exact full-bank preservation through signup, a fixed 31-day trial
 without a guest recovery cutoff, failed/stolen/replayed callback state, racing distinct claimants,
 existing-family collision/return, CSRF and idle socket revocation. Chromium at
 390px and 1280px exercises the real welcome/dashboard, editing, reload, guest WSS

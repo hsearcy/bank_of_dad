@@ -1,7 +1,8 @@
 # Cloudflare port: integrated bank, identity, billing and owner controls
 
-> **Publication status:** this is the public source snapshot of deployed application
-> commit `574d423bd1a50fbc523055e08ea238379f502517`. Production account settings,
+> **Publication status:** this source builds on the original hosted snapshot
+> `574d423bd1a50fbc523055e08ea238379f502517`, with subsequent public fixes and
+> the 31-day trial/subscription-copy update. Publication does not deploy it. Production account settings,
 > keys and owner identities are not included. The implementation/test reports below
 > are historical, scoped local evidence, not the current deployment inventory.
 > In particular, historical “not deployed”, login-unverified and launch-gate wording
@@ -58,7 +59,7 @@ are pinned, along with Python and npm dependency locks.
 
 - First visit opens the real dashboard and its shared sample initialization.
 - An opaque HTTP-only browser cookie accesses only its corresponding family.
-- A seven-day trial is created once using real server time. Dad's demo clock
+- A 31-day trial is created once using real server time. Dad's demo clock
   cannot extend access. Welcome dismissal persists.
 - Existing collect/save/withdraw/bond/spend, kid/settings/allowance/rates,
   gift, fast-forward and transaction edit/delete routes run against real DO SQL.
@@ -124,7 +125,7 @@ provider fixtures, even when run through real browsers.
 See [Public hosting](PUBLIC-HOSTING.md) for secure cookies, ingress guards, native
 abuse admission and the historical acceptance checklist; see
 [PUBLIC-RELEASE.md](PUBLIC-RELEASE.md) for portable setup. The no-payment pilot
-preserves the original seven-day trial and has no purchase actions. Explicit live
+preserves the original 31-day trial and has no purchase actions. Explicit live
 billing is separate. Local tests do not approve a new deployment. Recovery/deletion
 operator tooling and a hosted restore drill remain separate operational work.
 
