@@ -1,145 +1,75 @@
 # Bank of Dad
 
-A local, kid-friendly savings dashboard for tracking imaginary family balances, allowances, savings interest, and fixed-term investments. It does not connect to a bank or move real money.
+A family savings dashboard to help kids see how saving and compounding work. Track allowances, spending, savings interest, and fixed-term investments. It's an educational simulation—not a real bank, and it never connects to bank accounts or moves money.
 
-## Cloudflare hosted target
+Try the [hosted app at thebankofdad.app](https://thebankofdad.app). Self-hosting is free, with no account or subscription required.
 
-The [Cloudflare target](cloudflare/README.md) contains the hosted service source:
-guest dashboard, isolated Durable Object SQLite, native WebSocket updates, Google
-sign-in/guest claiming, Stripe billing and private owner controls. This public
-snapshot also includes [family polish](docs/family-polish-integration.md):
-About/Privacy, compact screen controls, child rename/removal, and configurable
-savings/investment periods. Operator configuration remains portable, not a copy
-of production credentials or infrastructure settings. No live keys, owner
-identities or family data are included. See the [publication notes](cloudflare/PUBLIC-RELEASE.md)
-for the original hosted snapshot's setup and verification boundaries. Source
-publication does not deploy these changes. Free self-hosting remains independent.
+## Run it yourself
 
-The dashboard update adds a customizable parent label, first-use parent PIN setup,
-clear spendable Wallet versus Total balances, and a tour that stays open through
-real actions. [Automatic savings interest](docs/automatic-interest.md) is optional
-and **off by default**: enabling it claims pending interest immediately, then once
-per configured savings period. See [parent controls](docs/parent-controls.md) and
-[exact savings arithmetic and downgrade limits](docs/savings-arithmetic.md).
-
-## Screenshots
-
-These screenshots show fictional names and sample balances in a disposable database. A fresh self-hosted install starts empty; hosted device trials start with Sample Kid.
-
-**Dashboard** — see balances, projected growth, savings, and investments at a glance.
-
-![Bank of Dad dashboard with two fictional children's savings and investments](docs/screenshots/dashboard.png)
-
-**Money over time** — explore an expanded view of past and projected balances.
-
-![Expanded money-over-time graph for a fictional child](docs/screenshots/money-over-time.png)
-
-## Start
-
-Requires Python 3 and `venv`. From this directory:
+You'll need Git, Bash, and Python 3.10 or newer with `venv` and pip available. On Linux, your distribution may package `venv` separately.
 
 ```sh
+git clone https://github.com/hsearcy/bank_of_dad.git
+cd bank_of_dad
 ./run.sh
 ```
 
-The script creates a local virtual environment, installs the requirements (including Flask-Sock for WebSockets), and starts the app. Open **http://127.0.0.1:5001** on the same machine. Open **Dad** to set and confirm a 4–8 digit parent PIN, then add a kid by name and emoji. You can change the parent label in those controls. A fresh database starts empty; no example family or transaction history is included. Newly added kids receive the starting wallet amount configured in `config.py`.
+The script creates a `.venv`, installs the Python dependencies, and starts the app. Open **[http://127.0.0.1:5001](http://127.0.0.1:5001)** on the same computer. Press `Ctrl+C` in the terminal to stop it; run `./run.sh` again to return to your saved bank.
 
-Use Dad controls to adjust allowances and rates, give money, edit transactions, or advance the clock for demonstrations. Each child also has **Rename** and **Remove…** controls (including the hosted Sample Kid). Rename preserves their money and history. Remove asks for confirmation before permanently deleting that child’s balances, rewards, investments and history; it does not affect other children or move money. See [kid management safety and verification](docs/kid-management.md). Kids can collect rewards, save, withdraw, invest, and record spending. Changes persist in SQLite. This is an educational simulation; rates and balances are not financial advice or actual accounts.
+1. Open **Dad** and set and confirm a **4–8 digit parent PIN**. There is no default PIN.
+2. Add a child with a name and emoji. A new install starts empty; each child gets the starting wallet amount from `config.py` ($5 by default).
+3. Set allowances and savings/investment rates in the parent controls. You can also change **Parent name or label** to Mom, Papa, or whatever your family uses.
 
-## Configuration and data
+Kids can collect rewards, move money between their wallet and savings, invest for a fixed term, and record spending. **Wallet** is available to spend; **Total** also includes savings and investments. The default rates are deliberately high to make growth visible to kids—adjust them to suit your family.
 
-| Variable | Default | Meaning |
+A shared tablet can stay on the dashboard, but isn't required. Multiple open dashboards on the same server receive live updates, with periodic refresh as a fallback. Access from another device needs network configuration and the precautions below; the default is accessible only on the computer running the app.
+
+## Settings
+
+Most day-to-day changes live in the parent controls: allowances, rates and periods, giving money, correcting transactions, and child names. `config.py` contains the starting defaults.
+
+**Automatic savings interest is optional and off by default.** Normally, kids collect interest themselves. Enabling it credits pending interest immediately, then compounds once per configured savings period. Self-hosting catches up when the dashboard reads or changes the bank; it does not run an offline background scheduler. See [automatic interest](docs/automatic-interest.md) for details.
+
+You can override the server settings when starting it:
+
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `BANK_OF_DAD_HOST` | `127.0.0.1` | Listen address |
-| `BANK_OF_DAD_PORT` | `5001` | Listen port |
-| `BANK_OF_DAD_DB` | `data/bank.db` in this directory | SQLite database path |
+| `BANK_OF_DAD_HOST` | `127.0.0.1` | Address to listen on; local access only by default |
+| `BANK_OF_DAD_PORT` | `5001` | Port to listen on |
+| `BANK_OF_DAD_DB` | `data/bank.db` inside the project directory | SQLite database file; its directory is created automatically |
 
-For example, `BANK_OF_DAD_PORT=5005 ./run.sh`. Back up your database separately; it contains children's names, balances, history and the PIN hash. Never commit it, local environment files, or backups to a public repository. The app creates the database directory when needed. Configure rules in `config.py` or use the Dad panel for per-child allowances and rates.
-
-## Live updates
-
-The existing Flask app serves a native WebSocket at `/api/updates`. Successful
-mutation routes send a content-free `state_changed` notification **after the bank
-function commits**; other open dashboards refetch `/api/state` immediately. There
-are no write commands over the socket. The frontend uses `ws://` on HTTP and
-`wss://` on HTTPS, reconnects with bounded exponential backoff, and resyncs on
-reconnection, page resume and returning online. The existing 30-second refresh
-remains as fallback/reconciliation for blocked or unsupported WebSockets, missed
-notifications, direct database changes and time-derived rewards. Reward sound,
-confetti and number-spin animations remain local to the collecting device.
-
-This is an in-memory broadcaster for the existing **single-process**, threaded
-self-hosted app (`./run.sh`); it is not a durable event log or a multi-worker
-pub/sub service. Each socket consumes server threads. A reverse proxy must pass
-WebSocket Upgrade/Connection headers for `/api/updates`, preserve the original
-Host, and allow idle connections (the server pings every 25 seconds). In hosted
-mode, the expected browser Origin is the configured HTTPS `BOD_PUBLIC_ORIGIN`,
-so TLS termination to an HTTP WSGI backend does not require trusting forwarded
-headers. Self-hosted mode compares Origin with the request's own host/scheme;
-if serving local mode behind TLS, configure trusted scheme forwarding in the
-WSGI setup. Never blindly trust arbitrary forwarded headers. If upgrading
-is unavailable, HTTP reads/writes and the polling fallback still work. Multiple
-worker processes need a shared broadcaster for immediate cross-worker delivery;
-without it, reconciliation still runs every 30 seconds. No deployment or proxy
-configuration is performed by this change.
-
-Only exact same-origin browser handshakes are accepted (missing, null and foreign
-Origins are rejected). In **self-hosted mode**, this is not authentication: the
-socket shares the dashboard's local, unauthenticated read boundary and reveals
-local activity timing to connected clients. Do not expose local mode publicly.
-In **hosted mode**, sockets additionally require an entitled parent session or anonymous device capability,
-subscribe only to that server-selected family, and recheck the persisted session
-and entitlement before each notification and on idle timeouts. Logout/session
-expiry or lost entitlement closes an open socket; HTTP reconciliation on socket
-loss moves the dashboard back to login/billing. No family identifiers or balances
-are carried in notifications. See [HOSTED.md](HOSTED.md) for operational limits.
-
-## Optional hosted families and subscriptions
-
-An opt-in hosted mode opens straight into a working sample family bank for a
-**31-day trial with no sign-up or card required**. Changes persist for that browser.
-Optional parent sign-in saves/syncs the entire bank without resetting the trial;
-clearing browser data or switching devices can lose anonymous access. After the
-trial, subscribe for **$9.99 USD/year per family** or ask for free access. Nothing
-is charged automatically. Separate family SQLite files and Stripe-hosted
-Checkout/customer portal handle signed-in subscriptions.
-Save/sync, subscription and sign-out live in Dad controls; operators can grant durable free
-access when a family cannot pay (see the local CLI and support-link setup in
-HOSTED.md). Self-hosting stays free and needs no Stripe or
-identity-provider dependencies or credentials. Saving a hosted bank with the default sign-in provider needs a Google account; trying it does not.
-No Auth0 service is required. See [HOSTED.md](HOSTED.md) for setup,
-retained data, verification and explicit limits. Hosted mode is not enabled by
-`run.sh`. These Flask instructions are separate from the deployed Cloudflare target;
-local fixture tests do not establish real-provider acceptance for your installation.
-
-## Self-hosted security limitations
-
-**Localhost is the safe default. Do not expose self-hosted mode to the public internet or an untrusted network.** The built-in Flask server is for local use, not a production deployment. The PIN is a child deterrent, not secure authentication: it has a small search space and is sent in requests without encryption over HTTP. Parent operations require PIN setup and verification; failed attempts are throttled, but initial setup must still happen on a trusted machine. The kid-facing API is intentionally unauthenticated, and anyone with access can view or modify some data. Network access requires your own strong authentication, transport encryption, network isolation, and security review. Self-hosted mode has no payment integration; neither mode connects to a real bank.
-
-## Tests
+For example, to use a different port:
 
 ```sh
-python3 -m venv .venv
-.venv/bin/pip install -r requirements-test.txt
-.venv/bin/python -m unittest discover -s tests -v
+BANK_OF_DAD_PORT=5005 ./run.sh
 ```
 
-Tests use temporary databases; set `BANK_OF_DAD_DB` to a disposable path when running any additional experiments because importing `app` initializes the configured database.
+## Your data and backups
 
-The ordinary suite includes real HTTP/WebSocket integration on a dynamically
-assigned loopback port. Optional browser tests exercise the **actual** template,
-JavaScript and Flask routes in independent Chromium processes, with polling
-disabled for push/reconnect checks; a separate test verifies polling fallback.
-They also check reward animations and preservation of an in-progress modal:
+Everything is saved in the SQLite database: children's names, balances, transaction history, settings, and the parent PIN hash. Keep it and any backups private; don't commit them or local environment files to Git.
 
-```sh
-.venv/bin/pip install playwright
-.venv/bin/python -m playwright install chromium
-BANK_OF_DAD_BROWSER_TESTS=1 .venv/bin/python -m unittest discover -s tests -v
-```
+For a simple backup, stop the app with `Ctrl+C`, copy `data/bank.db` somewhere safe, then restart it. If you set `BANK_OF_DAD_DB`, back up that file instead. To restore, stop the app and replace the database with your backup before restarting. Back up before updating the app, too.
 
-Without that opt-in, browser tests are skipped and Playwright is not required.
+Renaming a child preserves their money and history. **Removing a child permanently deletes their balances, rewards, investments, and history** after confirmation; it doesn't affect other children. Keep a backup if you might want to undo it.
 
-## Licensing
+## Keep it local
 
-Bank of Dad is available under the [MIT License](LICENSE).
+**Don't expose the default self-hosted app to the public internet or an untrusted network.** It uses Flask's local development server, not a production server. The PIN is a child deterrent, not secure authentication: child-facing actions are intentionally unauthenticated, and anyone with access can view or change some data. Plain HTTP does not encrypt the PIN or other requests.
+
+Set up the initial PIN on a trusted computer. Access beyond localhost requires your own strong authentication, HTTPS, network isolation, and security review—not just changing `BANK_OF_DAD_HOST`. A parent PIN alone does not make a home-network installation secure.
+
+## Screenshots
+
+These examples use fictional names and sample balances. Your self-hosted bank starts empty.
+
+![Bank of Dad dashboard with fictional children's savings and investments](docs/screenshots/dashboard.png)
+
+[See the expanded money-over-time graph](docs/screenshots/money-over-time.png).
+
+## Development
+
+The optional [hosted deployment guide](cloudflare/README.md) is separate from the free local setup above; no Cloudflare services or payment-provider credentials are needed to self-host.
+
+## License
+
+[MIT](LICENSE).
