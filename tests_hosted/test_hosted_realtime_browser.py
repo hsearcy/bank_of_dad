@@ -61,7 +61,8 @@ def test_hosted_browser_push_isolation_reconnect_and_expiry(hosted_app):
                     route.fulfill(status=200, content_type='text/html', body='<h1>Synthetic Checkout</h1>')
                 ctx.route('**/billing/checkout', stop_at_checkout)
                 page = page_for(ctx)
-                page.goto(origin + '/')  # Real browser OIDC code/PKCE callback.
+                page.goto(origin + '/auth/login')  # Real browser OIDC code/PKCE callback.
+                page.goto(origin + '/billing')
                 page.get_by_role('button', name='Subscribe with Stripe').click()
                 sync_api.expect(page.get_by_role('heading', name='Synthetic Checkout')).to_be_visible()
                 state['subscriptions'][customer] = [subscription()]
@@ -115,7 +116,7 @@ def test_hosted_browser_push_isolation_reconnect_and_expiry(hosted_app):
             })""")
             assert result is False
             with host.connect() as conn:
-                conn.execute("UPDATE families SET paid_until=0 WHERE subject='parent-a'")
+                conn.execute("UPDATE families SET paid_until=0, trial_until=0 WHERE subject='parent-a'")
             # Idle sockets close on expiry; the actual UI immediately leaves bank.
             sync_api.expect(a2).to_have_url(origin + '/billing')
             wallet(b, '$5.00')

@@ -14,7 +14,7 @@ from websocket import (create_connection, WebSocketBadStatusException,
                        WebSocketConnectionClosedException, WebSocketTimeoutException)
 from werkzeug.serving import make_server
 
-from test_hosted import hosted_app, call, csrf, login, post, signed_event, subscription
+from test_hosted import hosted_app, call, csrf, login, post, signed_event, subscription, expire_trials
 
 
 @contextmanager
@@ -39,6 +39,7 @@ def entitled(app, state, origin, subject, customer):
     assert post(client, '/billing/checkout', origin).status_code == 303
     state['subscriptions'][customer] = [subscription()]
     assert signed_event(client, origin, 'evt_' + customer, customer).status_code == 200
+    expire_trials(app.extensions['bod_hosted'])
     return client
 
 
@@ -114,6 +115,7 @@ def test_handshake_requires_session_entitlement_and_exact_trusted_origin(hosted_
     a = entitled(app, state, origin, 'parent-a', 'cus_1')
     unpaid = app.test_client()
     login(unpaid, state, origin, 'unpaid-parent')
+    expire_trials(host)
     with network(app) as base:
         for session_cookie, expected in ((None, 401), (cookie(unpaid), 402)):
             with pytest.raises(WebSocketBadStatusException) as error:

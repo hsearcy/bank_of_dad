@@ -1,7 +1,8 @@
 """Opt-in hosted identity, isolated family storage and Stripe subscriptions.
 
 No payment or identity dependencies are imported by the free self-hosted mode.
-One OIDC parent identity owns one family. Email is neither stored nor an identity key.
+One OIDC parent identity owns one family; anonymous banks use a device capability
+until claimed. Email is neither stored nor an identity key.
 """
 import hashlib
 import hmac
@@ -11,13 +12,14 @@ import re
 import secrets
 import sqlite3
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 from urllib.parse import parse_qs, urlsplit
 
 from flask import abort, g, jsonify, redirect, render_template, request, session
 
 import db
+from hosted_access import TRIAL_SECONDS, access_status, migrate, support_destination
 
 
 def digest(value):
@@ -27,11 +29,12 @@ def digest(value):
 class Hosted:
     def __init__(self, app):
         from authlib.integrations.flask_client import OAuth
-        from flask_session import Session
+        from flask_session.sqlalchemy import SqlAlchemySessionInterface
         from flask_sqlalchemy import SQLAlchemy
         import stripe
 
         self.app = app
+        self.support_url = support_destination()
         self.stripe_module = stripe
         self.origin = os.environ['BOD_PUBLIC_ORIGIN'].rstrip('/')
         self.issuer = os.environ.get('BOD_OIDC_ISSUER', 'https://accounts.google.com')
@@ -66,8 +69,52 @@ class Hosted:
             PERMANENT_SESSION_LIFETIME=timedelta(days=7), SESSION_REFRESH_EACH_REQUEST=False,
             SESSION_PERMANENT=True, MAX_CONTENT_LENGTH=1024 * 1024,
         )
+        class DeviceSessions(SqlAlchemySessionInterface):
+            def get_expiration_time(self, app, current):
+                if 'guest' in current:
+                    # Ask the browser to retain the opaque token, without an app
+                    # recovery deadline. Browsers may cap/evict persistent cookies.
+                    return datetime.max.replace(tzinfo=timezone.utc)
+                return super().get_expiration_time(app, current)
+
+            def _retrieve_session_data(self, store_id):
+                record = self.sql_session_model.query.filter_by(session_id=store_id).first()
+                if record:
+                    data = self.serializer.decode(record.data)
+                    # Also accept retained tokens from the old fixed-lifetime
+                    # guest sessions. Claim/logout still revoke the capability/SID.
+                    if 'guest' in data:
+                        return data
+                return super()._retrieve_session_data(store_id)
+
+            def _upsert_session(self, lifetime, current, store_id):
+                if 'guest' not in current:
+                    return super()._upsert_session(lifetime, current, store_id)
+                # NULL means no anonymous recovery deadline; normal authenticated
+                # sessions still use Flask-Session's seven-day expiration policy.
+                try:
+                    record = self.sql_session_model.query.filter_by(session_id=store_id).first()
+                    if record is None:
+                        record = self.sql_session_model(session_id=store_id, data=b'', expiry=None)
+                        self.client.session.add(record)
+                    record.data = self.serializer.encode(current)
+                    record.expiry = None
+                    self.client.session.commit()
+                except Exception:
+                    self.client.session.rollback()
+                    raise
+
         app.config['SESSION_SQLALCHEMY'] = SQLAlchemy(app)
-        Session(app)
+        app.session_interface = DeviceSessions(app, client=app.config['SESSION_SQLALCHEMY'])
+        # Upgrade retained guest sessions before the normal session_cleanup CLI
+        # can delete them under the former recovery deadline. Never extend an
+        # authenticated session or restore a deleted token/session.
+        with app.app_context():
+            interface = app.session_interface
+            for saved in interface.sql_session_model.query.filter(interface.sql_session_model.expiry.isnot(None)):
+                if 'guest' in interface.serializer.decode(saved.data):
+                    saved.expiry = None
+            interface.client.session.commit()
         self.oauth = OAuth(app).register(
             'parent', client_id=os.environ['BOD_OIDC_CLIENT_ID'],
             client_secret=os.environ['BOD_OIDC_CLIENT_SECRET'],
@@ -97,12 +144,30 @@ class Hosted:
                     id TEXT PRIMARY KEY, digest TEXT NOT NULL, received REAL NOT NULL
                 );
             ''')
+            migrate(conn)
+            columns = {row[1] for row in conn.execute('PRAGMA table_info(families)')}
+            if 'guest_hash' not in columns:
+                conn.execute('ALTER TABLE families ADD COLUMN guest_hash TEXT')
+                # Legacy column retained for additive schema compatibility only;
+                # anonymous recovery no longer has a time-based cutoff.
+                conn.execute('ALTER TABLE families ADD COLUMN guest_expires REAL')
+                conn.execute('ALTER TABLE families ADD COLUMN welcome_dismissed INTEGER NOT NULL DEFAULT 0')
+            columns = {row[1] for row in conn.execute('PRAGMA table_info(login_states)')}
+            if 'guest_family' not in columns:
+                conn.execute('ALTER TABLE login_states ADD COLUMN guest_family TEXT')
+                conn.execute('ALTER TABLE login_states ADD COLUMN guest_hash TEXT')
+        from owner_panel import OwnerPanel
+        self.owner_panel = OwnerPanel(self)
         app.before_request(self.guard)
         app.after_request(self.headers)
+        app.context_processor(self.account_context)
         app.add_url_rule('/auth/login', 'hosted_login', self.login)
         app.add_url_rule('/auth/callback', 'hosted_callback', self.callback)
         app.add_url_rule('/auth/logout', 'hosted_logout', self.logout, methods=['POST'])
         app.add_url_rule('/auth/signed-out', 'hosted_signed_out', self.signed_out)
+        app.add_url_rule('/auth/welcome', 'hosted_welcome', self.dismiss_welcome, methods=['POST'])
+        app.add_url_rule('/auth/choose-bank', 'hosted_choose_bank', self.choose_bank, methods=['GET', 'POST'])
+        app.add_url_rule('/auth/device-bank', 'hosted_device_bank', self.device_bank, methods=['POST'])
         app.add_url_rule('/billing', 'hosted_billing', self.billing)
         app.add_url_rule('/billing/checkout', 'hosted_checkout', self.checkout, methods=['POST'])
         app.add_url_rule('/billing/portal', 'hosted_portal', self.portal, methods=['POST'])
@@ -125,17 +190,80 @@ class Hosted:
             raise ValueError('Invalid server-owned family identifier')
         return str(self.root / ('family-' + family + '.sqlite'))
 
+    def valid_session(self, row, current):
+        if not row:
+            return False
+        if row['guest_hash'] is not None:
+            return hmac.compare_digest(row['guest_hash'], digest(current.get('guest', '')))
+        # A claimed guest capability must never become an authenticated session.
+        return 'guest' not in current
+
+    def replace_session(self, values):
+        session.clear()
+        session.update(values)
+        session['csrf'] = secrets.token_urlsafe(32)
+        session.permanent = True
+        self.app.session_interface.regenerate(session)
+
+    def start_guest(self):
+        import bank
+        family, capability = secrets.token_hex(16), secrets.token_urlsafe(32)
+        now = time.time()
+        path = self.family_path(family)
+        # Nothing can address this bank until initialization succeeds and the
+        # directory association commits. Use normal domain actions, not fixtures.
+        try:
+            db.init_db(path=path)
+            conn = db.get_conn(path)
+            try:
+                bank.add_kid(conn, 'Sample Kid')
+                bank.gift(conn, 1, 200, 'Sample money — try your bank')
+                bank.move_to_savings(conn, 1, 100)
+                bank.buy_bond(conn, 1, '1mo', 100)
+                # This brand-new sample has a short, honest history: the $1
+                # deposit has already earned about a cent at the normal rate.
+                # Age its recorded inception together (including ledger/history
+                # and both bond dates), never the bank clock or any existing kid.
+                # Allowance starts today. Cap age so custom low/zero rates don't
+                # accidentally deliver mature investments or weeks of allowance.
+                rate = bank.savings_weekly_rate(conn)
+                age = min(7 * 86400 / (100 * rate), 6 * 86400) if rate > 0 else 0
+                with conn:
+                    conn.execute('UPDATE kids SET created_ts=created_ts-?, savings_accrued_ts=savings_accrued_ts-? WHERE id=1', (age, age))
+                    conn.execute('UPDATE transactions SET ts=ts-? WHERE kid_id=1', (age,))
+                    conn.execute('UPDATE history SET ts=ts-? WHERE kid_id=1', (age,))
+                    conn.execute('UPDATE bonds SET buy_ts=buy_ts-?, mature_ts=mature_ts-? WHERE kid_id=1', (age, age))
+            finally:
+                conn.close()
+            with self.connect() as conn:
+                conn.execute('''INSERT INTO families
+                    (id, issuer, subject, trial_started, trial_until, guest_hash)
+                    VALUES (?, ?, ?, ?, ?, ?)''',
+                    (family, 'urn:bank-of-dad:guest', family, now, now + TRIAL_SECONDS,
+                     digest(capability)))
+        except Exception:
+            Path(path).unlink(missing_ok=True)
+            raise
+        self.replace_session({'family': family, 'guest': capability})
+
     def guard(self):
         # Trust only the configured origin, never forwarded Host headers.
         if request.host != urlsplit(self.origin).netloc:
             abort(400)
+        if request.path == '/owner' or request.path.startswith('/owner/') or request.path.startswith('/api/owner/'):
+            return self.owner_panel.guard()
         public = request.endpoint in ('hosted_login', 'hosted_callback', 'hosted_signed_out', 'hosted_webhook', 'static', 'service_worker')
         if public:
             return None
         family = session.get('family')
+        # Only the real dashboard entry creates a trial; API probes, static files,
+        # expired sessions and sign-out do not silently manufacture a new bank.
+        if not family and request.endpoint == 'index' and request.method == 'GET':
+            self.start_guest()
+            family = session['family']
         with self.connect() as conn:
             row = conn.execute('SELECT * FROM families WHERE id=?', (family,)).fetchone()
-        if not row:
+        if not self.valid_session(row, session):
             if request.path.startswith('/api/'):
                 return jsonify(error='Sign in required', login='/auth/login'), 401
             return redirect('/auth/login')
@@ -148,7 +276,7 @@ class Hosted:
             if request.headers.get('Origin') not in (None, self.origin):
                 abort(403)
         if request.path.startswith('/api/') or request.endpoint == 'index':
-            if row['paid_until'] <= time.time():
+            if not access_status(row)['active']:
                 if request.path.startswith('/api/'):
                     return jsonify(error='Subscription required', billing='/billing'), 402
                 return redirect('/billing')
@@ -186,8 +314,8 @@ class Hosted:
         if not current or current.get('family') != family:
             return False
         with self.connect() as conn:
-            row = conn.execute('SELECT paid_until FROM families WHERE id=?', (family,)).fetchone()
-        return bool(row and row['paid_until'] > time.time())
+            row = conn.execute('SELECT * FROM families WHERE id=?', (family,)).fetchone()
+        return bool(self.valid_session(row, current) and access_status(row)['active'])
 
     def headers(self, response):
         response.headers['Cache-Control'] = 'no-store'
@@ -198,16 +326,37 @@ class Hosted:
         return response
 
     def login(self):
-        session.clear()
-        session['browser'] = secrets.token_urlsafe(32)
-        session.permanent = True
-        self.app.session_interface.regenerate(session)
-        response = self.oauth.authorize_redirect(self.origin + '/auth/callback')
+        with self.connect() as conn:
+            row = conn.execute('SELECT * FROM families WHERE id=?', (session.get('family'),)).fetchone()
+        values = {}
+        if 'device_bank' in session:
+            values['device_bank'] = session['device_bank']
+        if self.valid_session(row, session) and 'guest' in session:
+            values = {key: session[key] for key in ('family', 'guest') if key in session}
+        if request.args.get('owner') == '1':
+            values['owner_return'] = True
+        # Keep the current guest SID/CSRF usable throughout provider startup.
+        # Revoking it here races the dashboard's idle WebSocket recheck/refresh,
+        # which can start a second login without the guest before this responds.
+        # Rotation belongs at the verified guest callback (privilege transition).
+        # Preserve the existing reset behavior for ordinary authenticated login.
+        if 'guest' not in values:
+            self.replace_session(values)
+        if values.get('owner_return'):
+            session['owner_return'] = True
+        if 'browser' not in session:
+            session['browser'] = secrets.token_urlsafe(32)
+        # In particular after an existing-family collision, let a Google parent
+        # choose a different identity rather than silently reusing provider SSO.
+        options = {'prompt': 'select_account'} if 'guest' in values and self.issuer == 'https://accounts.google.com' else {}
+        response = self.oauth.authorize_redirect(self.origin + '/auth/callback', **options)
         state = parse_qs(urlsplit(response.location).query)['state'][0]
         with self.connect() as conn:
             conn.execute('DELETE FROM login_states WHERE expires < ?', (time.time(),))
-            conn.execute('INSERT INTO login_states VALUES (?, ?, ?)',
-                         (digest(state), digest(session['browser']), time.time() + 600))
+            conn.execute('INSERT INTO login_states(state, browser, expires, guest_family, guest_hash) VALUES (?, ?, ?, ?, ?)',
+                         (digest(state), digest(session['browser']), time.time() + 600,
+                          values.get('family') if 'guest' in values else None,
+                          digest(values['guest']) if 'guest' in values else None))
         return response
 
     def callback(self):
@@ -215,9 +364,9 @@ class Hosted:
         if any(len(request.args.getlist(k)) != 1 for k in ('state', 'code')) or request.args.get('error'):
             return 'Sign-in failed. Please try again.', 400
         with self.connect() as conn:
-            result = conn.execute('DELETE FROM login_states WHERE state=? AND browser=? AND expires>?',
-                                  (digest(request.args['state']), digest(session.get('browser', '')), time.time()))
-            if result.rowcount != 1:
+            login_state = conn.execute('DELETE FROM login_states WHERE state=? AND browser=? AND expires>? RETURNING *',
+                                      (digest(request.args['state']), digest(session.get('browser', '')), time.time())).fetchone()
+            if login_state is None:
                 return 'Sign-in failed. Please try again.', 400
         try:
             token = self.oauth.authorize_access_token(
@@ -232,20 +381,79 @@ class Hosted:
                 raise ValueError('Invalid identity claims')
         except Exception:
             # Do not expose provider errors, tokens or personal claims.
-            session.clear()
+            self.replace_session({key: session[key] for key in ('family', 'guest', 'device_bank') if key in session})
             return 'Sign-in failed. Please try again.', 400
         with self.connect() as conn:
-            conn.execute('INSERT OR IGNORE INTO families(id, issuer, subject) VALUES (?, ?, ?)',
-                         (secrets.token_hex(16), self.issuer, claims['sub']))
-            family = conn.execute('SELECT id FROM families WHERE issuer=? AND subject=?',
-                                  (self.issuer, claims['sub'])).fetchone()['id']
+            conn.execute('BEGIN IMMEDIATE')
+            guest = conn.execute('SELECT * FROM families WHERE id=?', (login_state['guest_family'],)).fetchone()
+            can_claim = (guest is not None and guest['guest_hash'] is not None
+                         and guest['guest_hash'] == login_state['guest_hash']
+                         and session.get('family') == guest['id'] and self.valid_session(guest, session))
+            existing = conn.execute('SELECT id FROM families WHERE issuer=? AND subject=?',
+                                    (self.issuer, claims['sub'])).fetchone()
+            if login_state['guest_family'] and not can_claim and (existing is None or existing['id'] != login_state['guest_family']):
+                # Expiry/another claimant must not silently open a blank bank and
+                # imply that guest progress was imported. A same-owner retry is safe.
+                return ('This device bank is no longer available to save. Nothing was imported. '
+                        '<a href="/auth/login">Sign in again to open your saved family bank</a>.', 409)
+            if can_claim and existing is not None:
+                # Never merge, replace or delete either bank. The authenticated
+                # identity permits opening the existing bank only by explicit choice.
+                self.replace_session({'family': guest['id'], 'guest': session['guest'],
+                                      'bank_choice': {'family': existing['id'], 'expires': now + 600}})
+                return redirect('/auth/choose-bank')
+            if can_claim:
+                # One-time, writer-serialized ownership transfer: no bank file
+                # copying, no partial import, and no new trial or payment customer.
+                conn.execute('UPDATE families SET issuer=?, subject=?, guest_hash=NULL, guest_expires=NULL WHERE id=?',
+                             (self.issuer, claims['sub'], guest['id']))
+                family = guest['id']
+            else:
+                # Only the first creation starts a trial. Login and client inputs
+                # can never reset these server-owned timestamps.
+                conn.execute('INSERT OR IGNORE INTO families(id, issuer, subject, trial_started, trial_until) VALUES (?, ?, ?, ?, ?)',
+                             (secrets.token_hex(16), self.issuer, claims['sub'], now, now + TRIAL_SECONDS))
+                family = conn.execute('SELECT id FROM families WHERE issuer=? AND subject=?',
+                                      (self.issuer, claims['sub'])).fetchone()['id']
         db.init_db(path=self.family_path(family))
-        session.clear()
-        # regenerate only acts on nonempty sessions in Flask-Session.
-        session['family'] = family
-        session['csrf'] = secrets.token_urlsafe(32)
-        session.permanent = True
-        self.app.session_interface.regenerate(session)
+        values = {'family': family}
+        if 'device_bank' in session:
+            values['device_bank'] = session['device_bank']
+        owner_return = session.get('owner_return', False)
+        self.replace_session(values)
+        return redirect('/owner' if owner_return else '/')
+
+    def dismiss_welcome(self):
+        if g.hosted_family['guest_hash'] is not None:
+            with self.connect() as conn:
+                conn.execute('UPDATE families SET welcome_dismissed=1 WHERE id=?', (g.hosted_family['id'],))
+        return '', 204
+
+    def choose_bank(self):
+        choice = session.get('bank_choice', {})
+        if not choice or choice['expires'] <= time.time() or 'guest' not in session:
+            return redirect('/')
+        if request.method == 'GET':
+            return render_template('choose_bank.html')
+        if request.form.get('choice') == 'guest':
+            session.pop('bank_choice', None)
+            return redirect('/')
+        if request.form.get('choice') != 'existing':
+            abort(400)
+        device = {'family': session['family'], 'guest': session['guest']}
+        self.replace_session({'family': choice['family'], 'device_bank': device})
+        return redirect('/')
+
+    def device_bank(self):
+        device = session.get('device_bank')
+        if not device:
+            return redirect('/')
+        with self.connect() as conn:
+            row = conn.execute('SELECT * FROM families WHERE id=?', (device['family'],)).fetchone()
+        if not self.valid_session(row, device):
+            session.pop('device_bank', None)
+            return redirect('/')
+        self.replace_session(device)
         return redirect('/')
 
     def logout(self):
@@ -256,8 +464,14 @@ class Hosted:
         return '<p>You are signed out of Bank of Dad.</p><a href="/auth/login">Sign in</a>'
 
     def billing(self):
-        return render_template('billing.html', family=g.hosted_family,
-                               active=g.hosted_family['paid_until'] > time.time())
+        return render_template('billing.html')
+
+    def account_context(self):
+        family = getattr(g, 'hosted_family', None)
+        if family is None:
+            return {}
+        return {'hosted_account': access_status(family), 'hosted_family': family,
+                'hosted_guest': family['guest_hash'] is not None, 'support_url': self.support_url}
 
     def customer(self, conn):
         family = conn.execute('SELECT * FROM families WHERE id=?', (g.hosted_family['id'],)).fetchone()
@@ -285,10 +499,13 @@ class Hosted:
                     if sub.get('cancel_at'):
                         end = min(end, sub['cancel_at'])
                     until = max(until, end)
-        conn.execute('UPDATE families SET paid_until=? WHERE customer=?', (until, customer))
+        conn.execute('UPDATE families SET paid_until=?, billing_reconciled_at=? WHERE customer=?',
+                     (until, time.time(), customer))
         return until
 
     def checkout(self):
+        if g.hosted_family['guest_hash'] is not None:
+            return redirect('/auth/login')
         try:
             # Validate the operator's configured Price, not anything supplied by a browser.
             price = self.stripe.v1.prices.retrieve(self.price)

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Choose your Bank of Dad</title>
+  <link rel="icon" href="/static/icon-192.png">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="billing-page">
+  <header class="topbar"><h1>🏦 Bank of Dad</h1></header>
+  <main class="bank-choice billing-card">
+    <h2>You already have a family bank</h2>
+    <p>This sign-in belongs to an existing family. Nothing has been merged, overwritten or deleted.</p>
+    <p>Open that family bank, or keep trying this device’s separate bank. To save this trial, sign in with a different parent account. Its original trial deadline stays the same.</p>
+    <form action="/auth/choose-bank" method="post">
+      <input type="hidden" name="csrf_token" value="{{ session.csrf }}">
+      <button class="account-button account-primary" name="choice" value="existing">Open my existing family bank</button>
+      <button class="account-button account-secondary" name="choice" value="guest">Keep this device’s trial</button>
+    </form>
+    <p class="account-note">If you open your existing family, you can return to this device’s trial from Dad. The trial is still anonymous: clearing browser data or signing out can lose access to it.</p>
+  </main>
+</body>
+</html>

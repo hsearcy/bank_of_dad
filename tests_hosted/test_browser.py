@@ -39,8 +39,11 @@ def test_browser_parent_to_family_bank_and_signout(hosted_app):
             page = context.new_page()
             errors = []
             page.on('pageerror', lambda error: errors.append(str(error)))
-            page.goto(origin + '/')
-            sync_api.expect(page.get_by_text('Hosted family access costs', exact=False)).to_be_visible()
+            page.goto(origin + '/auth/login')
+            sync_api.expect(page.locator('#dadBtn')).to_be_visible()
+            page.locator('#dadBtn').click()
+            page.locator('.dad-account summary').click()
+            sync_api.expect(page.locator('.access-badge')).to_contain_text('Free trial')
             page.get_by_role('button', name='Subscribe with Stripe').click()
             sync_api.expect(page.get_by_role('heading', name='Synthetic Stripe Checkout fixture')).to_be_visible()
             assert len(state['checkouts']) == 1
@@ -71,7 +74,8 @@ def test_browser_parent_to_family_bank_and_signout(hosted_app):
             other = browser.new_context(ignore_https_errors=True)
             denied = other.request.get(origin + '/api/state')
             assert denied.status == 401
-            page.get_by_role('link', name='Subscription / sign out').click()
+            page.locator('#dadBtn').click()
+            page.locator('.dad-account summary').click()
             page.get_by_role('button', name='Sign out of Bank of Dad').click()
             sync_api.expect(page.get_by_text('You are signed out of Bank of Dad.')).to_be_visible()
             assert context.request.get(origin + '/api/state').status == 401

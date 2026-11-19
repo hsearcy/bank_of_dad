@@ -27,6 +27,7 @@ def hosted_app(tmp_path, monkeypatch, request):
     # loopback fixtures; Google's issuer and required scopes are preserved.
     issuer = getattr(request, 'param', 'https://accounts.google.com')
     monkeypatch.delenv('BOD_OIDC_ISSUER', raising=False)
+    monkeypatch.delenv('BOD_SUPPORT_URL', raising=False)
     origin = 'https://bank.example.test'
     settings = {
         'BANK_OF_DAD_MODE': 'hosted', 'BOD_PUBLIC_ORIGIN': origin,
@@ -171,6 +172,12 @@ def login(client, state, origin, subject='parent-a'):
     return result
 
 
+def expire_trials(host):
+    """Billing-only scenarios explicitly start after the app trial has ended."""
+    with host.connect() as conn:
+        conn.execute("UPDATE families SET trial_until=0")
+
+
 def csrf(client):
     with client.session_transaction(base_url='https://bank.example.test') as session:
         return session['csrf']
@@ -202,10 +209,11 @@ def test_full_parent_checkout_entitlement_bank_portal_logout(hosted_app):
     a = app.test_client()
     assert call(a, '/api/state', origin).status_code == 401
     assert login(a, state, origin).status_code == 302
+    expire_trials(host)
     assert call(a, '/api/state', origin).status_code == 402
     assert call(a, '/', origin).location == '/billing'
     page = call(a, '/billing', origin)
-    assert b'$9.99 USD per year' in page.data
+    assert b'$9.99 <span>USD per year</span>' in page.data
     assert call(a, '/billing/checkout', origin, method='POST').status_code == 403
     checkout = post(a, '/billing/checkout', origin, data={'customer': 'cus_attacker', 'family': 'other'})
     assert checkout.status_code == 303
@@ -375,6 +383,7 @@ def test_verified_webhooks_current_state_dedupe_retries_and_mode(hosted_app):
     app, host, state, origin = hosted_app
     a = app.test_client()
     login(a, state, origin)
+    expire_trials(host)
     post(a, '/billing/checkout', origin)
     assert call(a, '/billing/webhook', origin, method='POST', data=b'{}').status_code == 400
     assert signed_event(a, origin, timestamp=int(time.time()) + 1000).status_code == 400
@@ -489,6 +498,7 @@ def test_period_cancellation_session_expiry_and_resubscribe(hosted_app):
     app, host, state, origin = hosted_app
     a = app.test_client()
     login(a, state, origin)
+    expire_trials(host)
     post(a, '/billing/checkout', origin)
     state['checkout_status'] = 'complete'
     assert post(a, '/billing/checkout', origin).location == 'https://billing.stripe.com/synthetic'
@@ -518,6 +528,7 @@ def test_concurrent_webhooks_cannot_overwrite_a_newer_snapshot(hosted_app, monke
     app, host, state, origin = hosted_app
     a = app.test_client()
     login(a, state, origin)
+    expire_trials(host)
     post(a, '/billing/checkout', origin)
     state['subscriptions']['cus_1'] = [subscription()]
     fetched, release, second_attempt = threading.Event(), threading.Event(), threading.Event()

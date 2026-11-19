@@ -351,6 +351,99 @@ html, body {
 .keypad button:active { background: #e2e6ee; transform: scale(.96); }
 .keypad .kp-ok { background: var(--good); color: #fff; }
 
+/* Hosted family access: shared by Dad controls and the paused-access page. */
+.dad-account { background: #faf7ff; border: 2px solid #eee5ff; border-radius: 18px; padding: 16px; margin-bottom: 18px; }
+.dad-account summary { cursor: pointer; font-size: 14px; line-height: 2.4; }
+.dad-account summary .access-badge { display: inline-block; line-height: 1.5; margin-left: 6px; }
+.account-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.account-heading h3 { margin: 0; font-size: 19px; }
+.access-badge { font-size: 12px; font-weight: 800; border-radius: 999px; padding: 6px 10px; background: #ede4ff; color: #6940a0; }
+.access-paid, .access-free { background: #e5f7ec; color: #196b43; }
+.access-expired { background: #fff0d6; color: #875600; }
+.account-status { margin: 16px 0 6px; line-height: 1.5; }
+.account-note { font-size: 13px; line-height: 1.6; color: #655b77; margin: 8px 0; }
+.account-price { margin: 20px 0 14px; }
+.account-price strong { display: block; font-size: 36px; font-weight: 900; letter-spacing: -1px; }
+.account-price strong span { font-size: 15px; letter-spacing: 0; font-weight: 700; }
+.account-price small { display: block; color: #655b77; margin-top: 3px; font-size: 13px; }
+.account-button { display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%; min-height: 48px; border: 0; border-radius: 14px; padding: 13px 16px; font: inherit; font-size: 16px; font-weight: 800; text-decoration: none; cursor: pointer; text-align: center; }
+.account-primary { background: var(--good); color: #fff; }
+.account-secondary { background: #eee8f7; color: var(--ink); }
+.account-text-button { background: none; border: 0; padding: 10px 0; color: #64527e; text-decoration: underline; text-underline-offset: 3px; font: inherit; font-size: 13px; cursor: pointer; min-height: 44px; }
+.account-actions { margin-top: 14px; }
+.account-help { border-top: 1px solid #e6deee; margin-top: 20px; padding-top: 16px; }
+.account-help > strong { font-size: 15px; }
+.account-help p { font-size: 13px; line-height: 1.6; margin: 6px 0; color: #655b77; }
+.account-contact { display: inline-block; color: #654099; font-size: 14px; padding: 10px 0; text-underline-offset: 3px; }
+.family-reference { display: block; font-size: 11px; color: #655b77; line-height: 1.6; overflow-wrap: anywhere; margin-top: 8px; }
+.family-reference code { user-select: all; }
+.account-signout { border-top: 1px solid #e6deee; margin-top: 14px; padding-top: 4px; }
+.account-button:focus-visible, .account-text-button:focus-visible, .account-contact:focus-visible { outline: 3px solid #8b5cf6; outline-offset: 4px; }
+.billing-page { min-height: 100vh; }
+.billing-topbar { max-width: 1100px; margin: 0 auto; padding: 24px; gap: 12px; flex-wrap: wrap; }
+.billing-topbar .dad-btn { text-decoration: none; font-size: 14px; }
+.billing-layout { max-width: 1040px; margin: 24px auto 0; padding: 0 24px 32px; display: grid; grid-template-columns: 1fr 1fr; gap: 36px 56px; align-items: start; }
+.billing-intro { padding: 24px 0; }
+.billing-illustration { display: inline-flex; align-items: center; justify-content: center; width: 88px; height: 88px; border-radius: 28px; background: #fff6d6; border: 3px solid #ffe1a0; font-size: 48px; transform: rotate(-5deg); }
+.billing-eyebrow { font-size: 13px; color: #7d5c24; margin: 24px 0 10px; }
+.billing-intro h2 { font-size: clamp(30px, 4vw, 46px); line-height: 1.15; letter-spacing: -1px; margin: 0 0 18px; }
+.billing-intro > p:not(.billing-eyebrow) { color: #655b77; line-height: 1.7; max-width: 360px; }
+.billing-benefits { list-style: none; padding: 0; margin-top: 28px; display: grid; gap: 16px; font-size: 14px; line-height: 1.5; }
+.billing-benefits li { display: flex; align-items: start; gap: 12px; }
+.billing-benefits span { font-size: 22px; flex: none; }
+.billing-card { background: #fff; border: 3px solid #eee5ff; border-radius: 28px; padding: 26px; box-shadow: 0 10px 0 rgba(108, 74, 151, .05); }
+.bank-return { margin-top: 18px; }
+.billing-footer { grid-column: 1 / -1; text-align: center; font-size: 12px; color: #655b77; line-height: 1.6; }
+.billing-footer details { max-width: 720px; margin: 16px auto 0; }
+.billing-footer summary { cursor: pointer; min-height: 44px; }
+.billing-footer details p { text-align: left; }
+@media (max-width: 680px) {
+  .billing-topbar { padding: 18px; }
+  .billing-topbar h1 { font-size: 25px; }
+  .billing-layout { grid-template-columns: 1fr; gap: 20px; margin-top: 0; padding: 0 16px 24px; }
+  .billing-intro { padding: 10px 8px 0; }
+  .billing-illustration { width: 60px; height: 60px; font-size: 34px; border-radius: 20px; }
+  .billing-eyebrow { margin-top: 16px; }
+  .billing-intro h2 br { display: none; }
+  .billing-intro > p:not(.billing-eyebrow) { max-width: none; margin-bottom: 0; }
+  .billing-benefits { margin: 16px 0 0; gap: 8px; font-size: 13px; }
+  .billing-card { padding: 20px; border-radius: 24px; }
+  .dad-account { padding: 12px; }
+}
+
+/* Anonymous first visit uses the real dashboard beneath a native dialog. */
+.guest-welcome { width: min(520px, calc(100% - 32px)); max-height: calc(100dvh - 32px); margin: auto; padding: 24px; border: 3px solid #eee5ff; border-radius: 26px; color: var(--ink); box-shadow: 0 16px 60px #43305a33; }
+.guest-welcome::backdrop { background: #29203455; }
+.guest-welcome h2 { font-size: 25px; line-height: 1.2; margin: 8px 0 14px; }
+.guest-welcome p, .bank-choice p { font-size: 14px; line-height: 1.55; }
+.welcome-icon { font-size: 36px; }
+.guest-warning { background: #fff7df; padding: 12px; border-radius: 12px; }
+.welcome-signup { display: block; padding: 14px 4px; text-align: center; color: #654099; font-size: 14px; }
+.bank-choice { max-width: 560px; margin: 28px auto; }
+.bank-choice .account-button + .account-button { margin-top: 12px; }
+@media (max-width: 680px) { .bank-choice { margin: 16px; } .guest-welcome { padding: 18px; } }
+
+/* Optional device helpers and nonmodal product tour ------------------------*/
+.device-controls { border: 1px solid #e6deee; border-radius: 16px; padding: 12px 14px; margin: 14px 0; background: #faf7ff; }
+.device-controls h3 { margin: 0 0 8px; }
+.awake-toggle { display: flex; align-items: center; gap: 10px; min-height: 44px; cursor: pointer; }
+.awake-toggle input { width: 22px; height: 22px; accent-color: #7544af; flex: none; }
+#awakeStatus { font-size: 13px; line-height: 1.5; margin: 4px 0; }
+body { padding-bottom: var(--tour-space, 0px); }
+.product-tour { position: fixed; z-index: 45; bottom: 12px; left: 50%; transform: translateX(-50%); width: min(540px, calc(100% - 24px)); padding: 16px 18px; background: #fff; color: var(--ink); border: 2px solid #d4b9f5; border-radius: 20px; box-shadow: 0 6px 28px #43305a22; }
+.product-tour[hidden] { display: none; }
+.product-tour h2 { font-size: 18px; line-height: 1.3; margin: 0 0 6px; }
+.product-tour h2:focus { outline: none; }
+.product-tour p { font-size: 14px; line-height: 1.5; margin: 0 0 8px; }
+.tour-actions { display: flex; justify-content: space-between; gap: 12px; }
+.tour-actions button { min-height: 44px; padding: 8px 14px; border: 0; border-radius: 12px; font: inherit; font-size: 14px; cursor: pointer; color: #654099; background: #f3ecfb; }
+#tourNext { background: #7544af; color: white; }
+.tour-target { outline: 4px solid #7544af !important; outline-offset: 4px; }
+.product-tour button:focus-visible, #keepAwake:focus-visible { outline: 3px solid #7544af; outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) {
+  .tour-target { animation: none !important; transition: none !important; }
+}
+
 /* Confetti ----------------------------------------------------------------*/
 .confetti-layer { position: fixed; inset: 0; pointer-events: none; z-index: 100; overflow: hidden; }
 .confetti-bit { position: absolute; font-size: 30px; will-change: transform, opacity; }

@@ -4,7 +4,7 @@ A local, kid-friendly savings dashboard for tracking imaginary family balances, 
 
 ## Screenshots
 
-These screenshots show fictional names and sample balances in a disposable database. A fresh install starts empty.
+These screenshots show fictional names and sample balances in a disposable database. A fresh self-hosted install starts empty; hosted device trials start with Sample Kid.
 
 **Dashboard** — see balances, projected growth, savings, and investments at a glance.
 
@@ -67,7 +67,7 @@ Only exact same-origin browser handshakes are accepted (missing, null and foreig
 Origins are rejected). In **self-hosted mode**, this is not authentication: the
 socket shares the dashboard's local, unauthenticated read boundary and reveals
 local activity timing to connected clients. Do not expose local mode publicly.
-In **hosted mode**, sockets additionally require a signed-in, entitled parent,
+In **hosted mode**, sockets additionally require an entitled parent session or anonymous device capability,
 subscribe only to that server-selected family, and recheck the persisted session
 and entitlement before each notification and on idle timeouts. Logout/session
 expiry or lost entitlement closes an open socket; HTTP reconciliation on socket
@@ -76,11 +76,18 @@ are carried in notifications. See [HOSTED.md](HOSTED.md) for operational limits.
 
 ## Optional hosted families and subscriptions
 
-An opt-in hosted mode adds direct Google parent sign-in, server-owned families,
-separate SQLite bank storage per family, and Stripe-hosted Checkout/customer portal
-for **$9.99 USD/year per family**. Self-hosting stays free and needs no Stripe or
-identity-provider dependencies or credentials. Hosted parents need a Google account;
-no Auth0 service is required. See [HOSTED.md](HOSTED.md) for setup,
+An opt-in hosted mode opens straight into a working sample family bank for a
+**7-day trial with no sign-up or card required**. Changes persist for that browser.
+Optional parent sign-in saves/syncs the entire bank without resetting the trial;
+clearing browser data or switching devices can lose anonymous access. After the
+week, subscribe for **$9.99 USD/year per family** or ask for free access. Nothing
+is charged automatically. Separate family SQLite files and Stripe-hosted
+Checkout/customer portal handle signed-in subscriptions.
+Save/sync, subscription and sign-out live in Dad controls; operators can grant durable free
+access when a family cannot pay (see the local CLI and support-link setup in
+HOSTED.md). Self-hosting stays free and needs no Stripe or
+identity-provider dependencies or credentials. Saving a hosted bank with the default sign-in provider needs a Google account; trying it does not.
+No Auth0 service is required. See [HOSTED.md](HOSTED.md) for setup,
 retained data, verification and explicit limits. Hosted mode is not enabled by
 `run.sh` and has not been deployed or verified against real provider accounts.
 

@@ -36,7 +36,7 @@ txs = c.get('/api/transactions?kid_id=' + str(kid['id'])).get_json()
 print(json.dumps({'state':state,'txs':txs,'name':name,'emoji':emoji,'note':note}))
 '''], cwd=ROOT, env=env, text=True)
             data = json.loads(fixture)
-            source = (ROOT / "static/app.js").read_text().split('// Register the service worker', 1)[0]
+            source = (ROOT / "static/experience.js").read_text() + '\n' + (ROOT / "static/app.js").read_text().split('// Register the service worker', 1)[0]
             encoded = json.dumps(data).replace('<', r'\u003c')
             html = '''<!doctype html><meta charset="utf-8"><div id="kids"></div>
 <div id="modal"><div id="modalCard"></div></div><div id="dadPanel"><div id="dadKids"></div><div id="dadRates"></div></div><pre id="result">PENDING</pre>

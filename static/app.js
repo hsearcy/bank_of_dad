@@ -32,6 +32,30 @@ const serverNow = () => SERVER_NOW + (Date.now() / 1000 - FETCH_AT);
 
 let DAD_PIN = null; // remembered after a correct entry, for this page session
 
+let hostedRecovery = null;
+async function recoverHostedSession() {
+  if (!hostedRecovery) {
+    // A socket/HTTP request may carry the old SID while another tab's callback
+    // installs the rotated cookie. Hide stale data, then recheck with the current
+    // cookie before starting another OIDC flow. Never retry a money-changing POST.
+    document.documentElement.style.visibility = 'hidden';
+    hostedRecovery = (async () => {
+      await new Promise(resolve => setTimeout(resolve, 250));
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      try {
+        const check = await fetch('/api/state', { signal: controller.signal });
+        if (check.status === 401) window.location.replace('/auth/login');
+        else if (check.status === 402) window.location.replace('/billing');
+        else window.location.reload(); // New document/CSRF, or a transient read failure.
+      } catch (e) {
+        window.location.reload();
+      } finally { clearTimeout(timeout); }
+    })();
+  }
+  await hostedRecovery;
+}
+
 async function api(path, body, options = {}) {
   const headers = { "Content-Type": "application/json" };
   const csrf = document.querySelector('meta[name="csrf-token"]');
@@ -44,7 +68,8 @@ async function api(path, body, options = {}) {
     signal: options.signal,
   });
   if (res.status === 401 || res.status === 402) {
-    window.location.replace(res.status === 401 ? '/auth/login' : '/billing');
+    if (res.status === 401) await recoverHostedSession();
+    else window.location.replace('/billing');
     throw new Error('Parent sign-in or subscription required');
   }
   return res.json();
@@ -516,6 +541,7 @@ function render() {
   } : null;
   for (const k of STATE.kids) wrap.appendChild(kidCard(k));
   wireChartTips(wrap);
+  BodExperience.rendered();
 }
 
 function kidCard(k) {
@@ -1383,10 +1409,27 @@ if ("serviceWorker" in navigator && window.isSecureContext) {
 }
 
 wireGlobal();
+BodExperience.init();
 startLiveUpdates();
 (async () => {
   await refresh();
   await ensurePinSetup();      // force a Dad PIN on first launch
+  const welcome = document.querySelector('#guestWelcome');
+  if (welcome) {
+    document.querySelector('#sampleInterestNote').hidden = !(STATE.kids[0]?.pending_interest_cents > 0);
+    const dismiss = async (offerTour = false) => {
+      const response = await fetch('/auth/welcome', {method: 'POST', headers: {
+        'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content
+      }});
+      if (response.ok) {
+        welcome.close();
+        if (offerTour) BodExperience.offer();
+      }
+    };
+    document.querySelector('#tryGuestBank').onclick = () => dismiss(true).catch(() => {});
+    welcome.addEventListener('cancel', event => { event.preventDefault(); dismiss().catch(() => {}); });
+    welcome.showModal();
+  }
 })().catch(() => {}); // offline startup is retried by live sync / reconciliation
 setInterval(backgroundRefresh, 30000); // fallback + time-derived rewards
 setInterval(tick, 1000);     // smooth live growth of savings + bonds
