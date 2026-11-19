@@ -8,6 +8,8 @@ sleeps for days and there's no cron to babysit.
 """
 
 import hashlib
+import math
+import sqlite3
 import time
 
 import config
@@ -51,9 +53,30 @@ def pending_allowance(kid, now):
 # ---------------------------------------------------------------------------
 # Rates — Dad-configurable overrides stored in settings, else config defaults.
 # ---------------------------------------------------------------------------
+def savings_period_days(conn):
+    return int(db.get_setting(conn, "savings_period_days", 7))
+
+
+def savings_period_pct(conn):
+    # Retain the legacy storage/API key: this is the percentage per chosen period.
+    return float(db.get_setting(conn, "savings_weekly_pct", config.SAVINGS_WEEKLY_RATE * 100))
+
+
 def savings_weekly_rate(conn):
-    v = db.get_setting(conn, "savings_weekly_pct")
-    return (float(v) / 100.0) if v is not None else config.SAVINGS_WEEKLY_RATE
+    """Equivalent weekly simple rate for existing accrual callers."""
+    return savings_period_pct(conn) / 100 * (7 / savings_period_days(conn))
+
+
+def bond_days(conn, term_key):
+    return int(db.get_setting(conn, "days_" + term_key, config.BONDS[term_key]["days"]))
+
+
+def duration_label(days):
+    # Months are the existing fixed 30-day units, not calendar months.
+    if days % 30 == 0:
+        n = days // 30
+        return f"{n} Month" + ("s" if n != 1 else "")
+    return f"{days} Day" + ("s" if days != 1 else "")
 
 
 def bond_return_pct(conn, term_key):
@@ -63,23 +86,85 @@ def bond_return_pct(conn, term_key):
     return config.BONDS.get(term_key, {}).get("return_pct", 0)
 
 
-def set_rates(conn, savings_weekly_pct=None, returns=None):
-    """Dad sets savings %/week and per-term investment return %. `returns` is a
-    dict like {"1mo": 25, "3mo": 100}."""
+def _rate_number(value, *, days=False):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError("Enter a finite number")
+    if days:
+        if value != int(value) or not 1 <= value <= 3650:
+            raise ValueError("Periods must be whole days from 1 to 3650")
+        return int(value)
+    if value < 0:
+        raise ValueError("Percentages cannot be negative")
+    return float(value)
+
+
+def set_rates(conn, savings_weekly_pct=None, returns=None, savings_days=None, bond_period_days=None):
+    """Change future terms only; preserve accrued savings (including fractions).
+
+    No automatic collection/compounding or balance/ledger changes. An unchanged
+    save is a true no-op. Native SQLite owns a writer lock before the first read;
+    Workers already own the enclosing family transactionSync.
+    """
+    changes = {}
     if savings_weekly_pct is not None:
-        db.set_setting(conn, "savings_weekly_pct", max(0.0, float(savings_weekly_pct)))
-    for key, pct in (returns or {}).items():
-        if key in config.BONDS:
-            db.set_setting(conn, "return_pct_" + key, max(0.0, float(pct)))
-    conn.commit()
+        changes["savings_weekly_pct"] = _rate_number(savings_weekly_pct)
+    if savings_days is not None:
+        changes["savings_period_days"] = _rate_number(savings_days, days=True)
+    for values, prefix, days in ((returns, "return_pct_", False), (bond_period_days, "days_", True)):
+        if values is None:
+            continue
+        if not isinstance(values, dict) or any(key not in config.BONDS for key in values):
+            raise ValueError("Unknown investment term")
+        for key, value in values.items():
+            changes[prefix + key] = _rate_number(value, days=days)
+
+    native = isinstance(conn, sqlite3.Connection)
+    owned = native and not conn.in_transaction
+    if owned:
+        conn.execute("BEGIN IMMEDIATE")
+    if native:
+        conn.execute("SAVEPOINT rates_update")
+    savepoint_open = native
+    try:
+        current = {"savings_weekly_pct": savings_period_pct(conn),
+                   "savings_period_days": savings_period_days(conn)}
+        for key in config.BONDS:
+            current["return_pct_" + key] = bond_return_pct(conn, key)
+            current["days_" + key] = bond_days(conn, key)
+        changes = {key: value for key, value in changes.items() if value != current[key]}
+        if any(key in changes for key in ("savings_weekly_pct", "savings_period_days")):
+            now = now_ts(conn)
+            old_rate = savings_weekly_rate(conn)
+            for kid in conn.execute("SELECT * FROM kids").fetchall():
+                earned = _interest_exact(kid, now, old_rate)
+                conn.execute("UPDATE kids SET savings_interest_carry=?, savings_accrued_ts=? WHERE id=?",
+                             (earned, max(now, kid["savings_accrued_ts"]), kid["id"]))
+        for key, value in changes.items():
+            db.set_setting(conn, key, value)
+        if native:
+            conn.execute("RELEASE rates_update")
+            savepoint_open = False
+        if owned:
+            conn.commit()
+    except Exception:
+        if native and conn.in_transaction:
+            if savepoint_open:
+                conn.execute("ROLLBACK TO rates_update")
+                conn.execute("RELEASE rates_update")
+            if owned:
+                conn.rollback()
+        raise
     return True
 
 
-def pending_interest(kid, now, weekly_rate):
-    """Savings interest earned since the last collect — a reward, but collecting
-    it adds it to the SAVINGS balance (not the wallet)."""
+def _interest_exact(kid, now, weekly_rate):
     weeks = max(0.0, (now - kid["savings_accrued_ts"]) / (7 * 86400))
-    return int(round(kid["savings_cents"] * weekly_rate * weeks))
+    return kid["savings_interest_carry"] + kid["savings_cents"] * weekly_rate * weeks
+
+
+def pending_interest(kid, now, weekly_rate):
+    """Simple continuous interest, rounded only for the existing collection rule."""
+    return int(round(_interest_exact(kid, now, weekly_rate)))
 
 
 def uncollected_principal(conn, kid_id):
@@ -167,7 +252,7 @@ def kid_state(conn, kid, now):
         "bonds": [
             {
                 "id": b["id"],
-                "term": config.BONDS.get(b["term_key"], {}).get("label", b["term_key"]),
+                "term": duration_label(max(1, round((b["mature_ts"] - b["buy_ts"]) / 86400))),
                 "emoji": config.BONDS.get(b["term_key"], {}).get("emoji", "💰"),
                 "principal_cents": b["principal_cents"],
                 "payout_cents": b["payout_cents"],
@@ -232,6 +317,7 @@ def collect_rewards(conn, kid_id, kind="all"):
     new_savings = kid["savings_cents"]
     periods_paid = kid["allowance_periods_paid"]
     savings_ts = kid["savings_accrued_ts"]
+    savings_carry = kid["savings_interest_carry"]
     hero_delta = 0
     matured = []
 
@@ -247,7 +333,10 @@ def collect_rewards(conn, kid_id, kind="all"):
         interest_cents = pending_interest(kid, now, savings_weekly_rate(conn))
         if interest_cents > 0:
             new_savings += interest_cents      # interest goes INTO savings
-            savings_ts = now
+            # Carry can be collected after a demo/system clock rewind. Never
+            # reopen time already represented by that earned carry.
+            savings_ts = max(now, savings_ts)
+            savings_carry = 0
             hero_delta += interest_cents
             _tx(conn, kid_id, now, "interest", interest_cents, "Savings interest")
 
@@ -263,8 +352,8 @@ def collect_rewards(conn, kid_id, kind="all"):
 
     conn.execute(
         "UPDATE kids SET wallet_cents=?, savings_cents=?, allowance_periods_paid=?, "
-        "savings_accrued_ts=? WHERE id=?",
-        (new_wallet, new_savings, periods_paid, savings_ts, kid_id),
+        "savings_accrued_ts=?, savings_interest_carry=? WHERE id=?",
+        (new_wallet, new_savings, periods_paid, savings_ts, savings_carry, kid_id),
     )
     for b in matured:
         conn.execute("UPDATE bonds SET collected=1 WHERE id=?", (b["id"],))
@@ -281,13 +370,13 @@ def move_to_savings(conn, kid_id, amount_cents):
     if amount < config.MIN_MOVE_CENTS:
         return False, "Too little to save"
     # Bank any earned interest into the principal first, then add the deposit and
-    # reset the clock so interest accrues cleanly from now.
+    # reset the clock, but never reopen an already-earned interval on a rewind.
     new_savings = kid["savings_cents"] + pending_interest(kid, now, savings_weekly_rate(conn)) + amount
     new_wallet = kid["wallet_cents"] - amount
     conn.execute(
-        "UPDATE kids SET wallet_cents=?, savings_cents=?, savings_accrued_ts=? "
+        "UPDATE kids SET wallet_cents=?, savings_cents=?, savings_accrued_ts=?, savings_interest_carry=0 "
         "WHERE id=?",
-        (new_wallet, new_savings, now, kid_id),
+        (new_wallet, new_savings, max(now, kid["savings_accrued_ts"]), kid_id),
     )
     _tx(conn, kid_id, now, "save", amount, "Moved to savings")
     _record_history(conn, kid_id, now)
@@ -303,9 +392,10 @@ def withdraw_savings(conn, kid_id, amount_cents):
     if amount <= 0:
         return False, "Nothing to take out"
     conn.execute(
-        "UPDATE kids SET wallet_cents=?, savings_cents=?, savings_accrued_ts=? "
+        "UPDATE kids SET wallet_cents=?, savings_cents=?, savings_accrued_ts=?, savings_interest_carry=0 "
         "WHERE id=?",
-        (kid["wallet_cents"] + amount, savings_total - amount, now, kid_id),
+        (kid["wallet_cents"] + amount, savings_total - amount,
+         max(now, kid["savings_accrued_ts"]), kid_id),
     )
     _tx(conn, kid_id, now, "withdraw", amount, "Savings to wallet")
     _record_history(conn, kid_id, now)
@@ -427,9 +517,9 @@ def buy_bond(conn, kid_id, term_key, amount_cents):
     amount = min(amount_cents, kid["wallet_cents"])
     if amount < config.MIN_MOVE_CENTS:
         return False, "Need more coins first"
-    spec = config.BONDS[term_key]
     payout = int(round(amount * (1 + bond_return_pct(conn, term_key) / 100)))
-    mature = now + spec["days"] * 86400
+    days = bond_days(conn, term_key)
+    mature = now + days * 86400
     conn.execute("UPDATE kids SET wallet_cents=? WHERE id=?",
                  (kid["wallet_cents"] - amount, kid_id))
     cur = conn.execute(
@@ -437,7 +527,7 @@ def buy_bond(conn, kid_id, term_key, amount_cents):
         "buy_ts, mature_ts, collected) VALUES(?,?,?,?,?,?,0)",
         (kid_id, term_key, amount, payout, now, mature),
     )
-    _tx(conn, kid_id, now, "invest", amount, f"Invested ({spec['label']} lock)", cur.lastrowid)
+    _tx(conn, kid_id, now, "invest", amount, f"Invested ({duration_label(days)} lock)", cur.lastrowid)
     _record_history(conn, kid_id, now)
     conn.commit()
     return True, "Locked in!"
@@ -479,6 +569,10 @@ def add_kid(conn, name, emoji="🐣", color="#4f9dde"):
 
 
 def update_kid(conn, kid_id, name=None, emoji=None, color=None):
+    if name is not None:
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 80:
+            raise ValueError("Use a name between 1 and 80 characters.")
+        name = name.strip()
     kid = conn.execute("SELECT * FROM kids WHERE id=?", (kid_id,)).fetchone()
     if not kid:
         return False
@@ -488,6 +582,23 @@ def update_kid(conn, kid_id, name=None, emoji=None, color=None):
     )
     conn.commit()
     return True
+
+
+def remove_kid(conn, kid_id, confirm_name):
+    """Permanently remove exactly the confirmed child and their dependent rows.
+
+    Both adapters enforce the schema's ON DELETE CASCADE foreign keys. One SQL
+    statement makes balances, bonds, ledger and chart history disappear atomically
+    (including on a trigger failure), without reversing money into another child.
+    Matching the displayed name also rejects a stale confirmation after a rename.
+    There is no existing archive/soft-delete model; do not reseed an empty bank.
+    """
+    if not isinstance(confirm_name, str):
+        return False
+    conn.execute("DELETE FROM kids WHERE id=? AND name=?", (kid_id, confirm_name))
+    removed = conn.execute("SELECT changes() AS removed").fetchone()["removed"] == 1
+    conn.commit()
+    return removed
 
 
 def set_allowance(conn, kid_id, amount_cents, period_days, enabled=True):

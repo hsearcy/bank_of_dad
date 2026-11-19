@@ -69,7 +69,7 @@ MUTATION_ENDPOINTS = {
     "api_collect", "api_save", "api_withdraw", "api_bond", "api_spend",
     "api_admin_set_pin", "api_gift", "api_add_kid", "api_update_kid",
     "api_set_allowance", "api_tx_delete", "api_tx_edit", "api_set_rates",
-    "api_fastforward",
+    "api_fastforward", "api_remove_kid",
 }
 
 
@@ -95,10 +95,11 @@ def cfg(conn):
     return {
         "allowance_dollars": config.ALLOWANCE_CENTS / 100,
         "allowance_period_days": config.ALLOWANCE_PERIOD_DAYS,
-        "savings_weekly_pct": round(bank.savings_weekly_rate(conn) * 100, 2),
+        "savings_weekly_pct": bank.savings_period_pct(conn),
+        "savings_period_days": bank.savings_period_days(conn),
         "min_move_cents": config.MIN_MOVE_CENTS,
         "bonds": [
-            {"key": k, "label": v["label"], "days": v["days"],
+            {"key": k, "label": bank.duration_label(bank.bond_days(conn, k)), "days": bank.bond_days(conn, k),
              "return_pct": bank.bond_return_pct(conn, k), "emoji": v["emoji"]}
             for k, v in config.BONDS.items()
         ],
@@ -208,7 +209,11 @@ def api_transactions():
 # ----- Dad / admin -----
 def _pin():
     """PIN supplied with an admin request (header preferred, body fallback)."""
-    return request.headers.get("X-Dad-Pin") or (request.json or {}).get("pin")
+    header = request.headers.get("X-Dad-Pin")
+    if header:
+        return header
+    body = request.get_json(silent=True)
+    return body.get("pin") if isinstance(body, dict) else None
 
 
 def _pin_ok(conn):
@@ -292,9 +297,33 @@ def api_update_kid():
         denied = _pin_ok(conn)
         if denied:
             return denied
-        bank.update_kid(conn, _kid_id(), request.json.get("name"),
-                        request.json.get("emoji"), request.json.get("color"))
-        return jsonify({"ok": True})
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or type(body.get("kid_id")) is not int or body["kid_id"] <= 0:
+            return jsonify(ok=False, message="Invalid child ID."), 400
+        try:
+            ok = bank.update_kid(conn, body["kid_id"], body.get("name"),
+                                 body.get("emoji"), body.get("color"))
+        except ValueError as error:
+            return jsonify(ok=False, message=str(error)), 400
+        return jsonify(ok=ok, message="Saved" if ok else "Child not found."), (200 if ok else 404)
+    finally:
+        conn.close()
+
+
+@app.route("/api/admin/kid/remove", methods=["POST"])
+def api_remove_kid():
+    conn = db.get_conn()
+    try:
+        denied = _pin_ok(conn)
+        if denied:
+            return denied
+        body = request.get_json(silent=True)
+        if (not isinstance(body, dict) or type(body.get("kid_id")) is not int
+                or body["kid_id"] <= 0 or not isinstance(body.get("confirm_name"), str)):
+            return jsonify(ok=False, message="Confirm the child you want to remove."), 400
+        ok = bank.remove_kid(conn, body["kid_id"], body["confirm_name"])
+        return jsonify(ok=ok, message="Removed" if ok else
+                       "Child changed or was already removed. Refresh the bank and review again."), (200 if ok else 409)
     finally:
         conn.close()
 
@@ -352,8 +381,15 @@ def api_set_rates():
         denied = _pin_ok(conn)
         if denied:
             return denied
-        body = request.json or {}
-        bank.set_rates(conn, body.get("savings_weekly_pct"), body.get("returns") or {})
+        body = request.json
+        if not isinstance(body, dict):
+            return jsonify({"ok": False, "message": "Expected rate settings"}), 400
+        try:
+            bank.set_rates(conn, body.get("savings_weekly_pct"), body.get("returns"),
+                           body.get("savings_period_days"), body.get("bond_period_days"))
+            conn.commit()  # Request-owned SQLite transaction; a no-op inside the DO.
+        except (ValueError, OverflowError):
+            return jsonify({"ok": False, "message": "Use nonnegative finite percentages and whole periods of 1–3650 days."}), 400
         return jsonify({"ok": True})
     finally:
         conn.close()

@@ -1,0 +1,37 @@
+<footer class="site-footer">
+  <span>A little family project.</span>
+  <nav aria-label="About this project">
+    <button type="button" class="account-text-button" data-info-dialog="aboutDialog" aria-haspopup="dialog" aria-controls="aboutDialog">About</button>
+    <button type="button" class="account-text-button" data-info-dialog="privacyDialog" aria-haspopup="dialog" aria-controls="privacyDialog">Privacy</button>
+  </nav>
+</footer>
+
+<dialog id="aboutDialog" class="info-dialog" aria-labelledby="aboutTitle">
+  <h2 id="aboutTitle" tabindex="-1" autofocus>About Bank of Dad</h2>
+  <p>I built Bank of Dad to help my kids learn the basics of money: spending thoughtfully, saving for something, and seeing how little amounts grow through compounding when you start young.</p>
+  <p>It’s a simple family learning tool, not a real bank. The balances are for practice; the conversations and habits are the point. I hope it helps your family too.</p>
+  <p><a href="https://github.com/hsearcy/bank_of_dad" target="_blank" rel="noopener noreferrer">Explore the project or self-host for free ↗</a></p>
+  <p class="account-note">Questions or ideas? <a href="mailto:support@thebankofdad.app">support@thebankofdad.app</a></p>
+  <form method="dialog"><button class="account-button account-secondary" type="submit">Close</button></form>
+</dialog>
+
+<dialog id="privacyDialog" class="info-dialog" aria-labelledby="privacyTitle">
+  <h2 id="privacyTitle" tabindex="-1" autofocus>Privacy</h2>
+  <p>Use nicknames for your kids. Bank of Dad stores the names you enter, balances, allowances, savings and investments, plus transaction notes and history. It doesn’t need kids’ email addresses or birth dates.</p>
+  {% if hosted_account is defined %}
+  <p>For a saved bank, we keep your sign-in provider’s verified account ID (Google on thebankofdad.app) to connect you to your family bank, along with browser sessions and access status. Google profile details and tokens aren’t kept after sign-in validation.</p>
+  <p>Stripe handles card details and subscriptions. Bank of Dad keeps billing references and subscription status, not your card details.</p>
+  {% if cloudflare_incomplete is defined %}
+  <p>Cloudflare hosts the app and stores the family bank, account and session data.</p>
+  {% else %}
+  <p>The person running this hosted copy stores the family bank, account and session data on their server.</p>
+  {% endif %}
+  <p>Trying it without an account? Access depends on this browser’s session. Clearing browser data, signing out or switching devices can lose access to an unsaved bank. Save / sync in Dad to keep access across devices.</p>
+  {% else %}
+  <p>This self-hosted copy keeps its bank data and Dad PIN hash on the server running this copy. It doesn’t need a sign-in provider or payment service. Anyone who can reach this copy can see the dashboard; the Dad PIN isn’t a private child login.</p>
+  <p>For questions about data in this copy, ask the person running it.</p>
+  {% endif %}
+  <p class="account-note">Questions about the project or privacy? <a href="mailto:support@thebankofdad.app">support@thebankofdad.app</a></p>
+  <form method="dialog"><button class="account-button account-secondary" type="submit">Close</button></form>
+</dialog>
+<script src="/static/footer.js"></script>

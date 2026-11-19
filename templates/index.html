@@ -22,17 +22,19 @@
   </header>
 
   <main id="kids" class="kids"></main>
+  {% include 'footer.html' %}
 
   <!-- Dad panel -->
   <div id="dadPanel" class="panel hidden">
     <div class="panel-card">
       <h2>👨‍👧 Dad Controls</h2>
-      <section class="device-controls" aria-labelledby="deviceTitle">
-        <h3 id="deviceTitle">This screen</h3>
-        <label class="awake-toggle"><input id="keepAwake" type="checkbox" role="switch" aria-describedby="awakeHelp awakeStatus"> Keep screen awake</label>
+      <section class="device-controls" aria-label="This screen">
+        <div class="device-row">
+          <label class="awake-toggle"><input id="keepAwake" type="checkbox" role="switch" aria-describedby="awakeHelp awakeStatus"> Keep screen awake</label>
+          <button id="replayTour" class="account-text-button" type="button">Quick tour</button>
+        </div>
         <p id="awakeStatus" role="status">Off</p>
-        <p id="awakeHelp" class="account-note">Optional for a shared tablet; off again after a reload. Works only while this page is visible, on supported browsers over HTTPS (or localhost). Your device may still put the display to sleep; this cannot keep a locked screen awake.</p>
-        <button id="replayTour" class="account-text-button" type="button">Show the quick tour</button>
+        <p id="awakeHelp" class="account-note">While this page is visible. Resets on reload.</p>
       </section>
       {% if hosted_account is defined %}
       <details class="dad-account" aria-label="Family subscription">
@@ -77,6 +79,21 @@
   <div id="modal" class="panel hidden">
     <div class="panel-card" id="modalCard"></div>
   </div>
+
+  <!-- Native modal: keyboard focus stays inside; Escape cancels without writes. -->
+  <dialog id="kidDialog" class="kid-dialog" aria-labelledby="kidDialogTitle" aria-describedby="kidDialogHelp">
+    <form id="kidDialogForm">
+      <h2 id="kidDialogTitle"></h2>
+      <p id="kidDialogHelp"></p>
+      <label id="kidNameLabel" for="kidName">Name</label>
+      <input id="kidName" name="name" autocomplete="off" required>
+      <p id="kidDialogError" role="alert"></p>
+      <div class="kid-dialog-actions">
+        <button id="kidDialogCancel" type="button" autofocus>Cancel</button>
+        <button id="kidDialogSave" type="submit">Save name</button>
+      </div>
+    </form>
+  </dialog>
 
   <div id="confetti" class="confetti-layer"></div>
 

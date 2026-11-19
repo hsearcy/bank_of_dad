@@ -40,6 +40,45 @@ class ExperienceBrowserBase(test_realtime.AppServerCase):
 
 
 class ExperienceBrowserTests(ExperienceBrowserBase):
+    def test_footer_dialogs_and_compact_screen_controls(self):
+        for width in [390, 1280]:
+            with self.subTest(width=width):
+                page = self.page(width=width, height=667)
+                page.emulate_media(reduced_motion='reduce')
+                errors = []
+                page.on('pageerror', lambda error: errors.append(str(error)))
+                self.assertLess(page.locator('.device-controls').bounding_box()['height'], 200)
+                self.assertLess(len(page.locator('#awakeHelp').inner_text()), 65)
+                page.locator('#closeDad').click()
+                before = self.bank_snapshot()
+                footer = page.get_by_role('contentinfo')
+                self.assertTrue(footer.is_visible())
+                for name, title in [('About', 'About Bank of Dad'), ('Privacy', 'Privacy')]:
+                    opener = footer.get_by_role('button', name=name, exact=True)
+                    opener.focus()
+                    page.keyboard.press('Enter')
+                    dialog = page.get_by_role('dialog', name=title, exact=True)
+                    self.assertTrue(dialog.is_visible())
+                    self.assertEqual(title, page.locator(':focus').inner_text())
+                    page.keyboard.press('Tab')
+                    self.assertTrue(page.locator(':focus').evaluate('(el) => !!el.closest("dialog")'))
+                    self.assertTrue(dialog.evaluate('(el) => el.scrollWidth <= el.clientWidth && el.getBoundingClientRect().bottom <= innerHeight'))
+                    page.keyboard.press('Escape')
+                    self.assertFalse(dialog.is_visible())
+                    self.assertTrue(opener.evaluate('(el) => el === document.activeElement'))
+                    opener.click()
+                    dialog.get_by_role('button', name='Close', exact=True).click()
+                    self.assertFalse(dialog.is_visible())
+                footer.get_by_role('button', name='Privacy', exact=True).click()
+                privacy = page.get_by_role('dialog', name='Privacy', exact=True)
+                self.assertIn('server running this copy', privacy.inner_text())
+                self.assertNotIn('Google', privacy.inner_text())
+                self.assertNotIn('Stripe', privacy.inner_text())
+                privacy.get_by_role('button', name='Close', exact=True).click()
+                self.assertTrue(page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
+                self.assertEqual(before, self.bank_snapshot())
+                self.assertEqual([], errors)
+
     def test_tour_prioritizes_interest_on_later_child(self):
         self.assertTrue(self.post('/api/admin/kid', {'name': 'Interest ready'})['ok'])
         second_id = self.get_state()['kids'][1]['id']
@@ -175,9 +214,9 @@ class ExperienceBrowserTests(ExperienceBrowserBase):
             page.locator('.gift-amt').fill('1')
             page.locator('.gift-note').fill('Synthetic experience test')
             page.locator('.gift-btn').click()
-            page.wait_for_function('document.querySelector("#kids .big").textContent === "$6.00"')
+            page.wait_for_function('document.querySelector("#kids .big")?.textContent === "$6.00"')
             page.reload()
-            page.wait_for_function('document.querySelector("#kids .big").textContent === "$6.00"')
+            page.wait_for_function('document.querySelector("#kids .big")?.textContent === "$6.00"')
             # Reset only this disposable fixture for the second viewport.
             self.post('/api/spend', {'kid_id': self.kid_id, 'amount_cents': 100, 'reason': 'Synthetic reset'})
 

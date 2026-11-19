@@ -13,6 +13,11 @@ const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
 const dollars = (c) => "$" + (c / 100).toFixed(2);
 const coins = (c) => Math.round(c / 10); // 1 coin = 10¢, for a tactile count
 const WEEK = 7 * 86400;
+const savingsPeriodSeconds = () => (STATE.config.savings_period_days || 7) * 86400;
+const savingsPeriodLabel = () => {
+  const days = STATE.config.savings_period_days || 7;
+  return days === 7 ? "week" : days === 1 ? "day" : `${days} days`;
+};
 
 function chartDollarLabel(cents) {
   const amount = cents / 100;
@@ -87,6 +92,8 @@ function renderSnapshot() {
     return;
   }
   render();
+  // Keep remote rename/removal visible in Dad without wiping forms on money ticks.
+  if (!$('#dadPanel').classList.contains('hidden') && dadKidSignature !== kidSignature()) renderDadPanel();
   const graph = $("#modal .expanded-chart");
   if (graph && !$("#modal").classList.contains("hidden")) {
     graph._refresh?.();
@@ -243,14 +250,14 @@ function whatIfProjection(cur, fut, wf) {
                                           b.days * 86400, now + b.days * 86400, t);
   const moved = wf.save + wf.m1 + wf.m3;
   return fut.map((p) => {
-    const savings = wf.save * Math.pow(1 + wr, (p.t - now) / WEEK);
+    const savings = wf.save * Math.pow(1 + wr, (p.t - now) / savingsPeriodSeconds());
     return { t: p.t, total: p.total - moved + savings + lock(wf.m1, b1, p.t) + lock(wf.m3, b3, p.t) };
   });
 }
 
 // Project each pool forward from today over the selected range. Wallet stays
 // flat (spending money you keep on hand) so the contrast is clear: money you
-// DON'T save stays put. Savings compounds weekly (interest is collected back
+// DON'T save stays put. Savings compounds each chosen period (interest is collected back
 // into savings). Invest follows the kid's real locks and assumes each payout
 // is re-invested in the same term, so it climbs in stairs.
 function project(cur, now, futureDays, bonds = []) {
@@ -271,7 +278,7 @@ function project(cur, now, futureDays, bonds = []) {
   ts.sort((a, b) => a - b);
   return [...new Set(ts)].map((t) => {
     const wallet = cur.wallet;
-    const savings = cur.savings * Math.pow(1 + wr, (t - now) / WEEK);
+    const savings = cur.savings * Math.pow(1 + wr, (t - now) / savingsPeriodSeconds());
     const invest = locks.reduce((sum, l) => sum + relockValue(l.p, l.pay, l.term, l.first, t), 0);
     return { t, wallet, savings, invest, total: wallet + savings + invest };
   });
@@ -581,7 +588,7 @@ function kidCard(k) {
     <div class="pool savings">
       <div class="pool-head">
         <span class="pool-title">🏦 Savings</span>
-        <span class="pool-badge">📈 +${STATE.config.savings_weekly_pct}% / week</span>
+        <span class="pool-badge">📈 +${STATE.config.savings_weekly_pct}% / ${savingsPeriodLabel()}</span>
       </div>
       <div class="pool-val s-val">${dollars(k.savings_cents)}</div>
       ${savingsBody(k, weeklyRate)}
@@ -680,9 +687,9 @@ function rewardsBlock(k) {
 // Savings: a concrete "in 3 months" projection (the chart shows the curve).
 function savingsBody(k, weeklyRate) {
   if (k.savings_cents <= 0) {
-    return `<div class="pool-empty">Tap <b>Save coins</b> and watch them grow every week! 🌱</div>`;
+    return `<div class="pool-empty">Tap <b>Save coins</b> and watch them grow! 🌱</div>`;
   }
-  const future = k.savings_cents * Math.pow(1 + weeklyRate, 13);
+  const future = k.savings_cents * Math.pow(1 + weeklyRate, 13 * WEEK / savingsPeriodSeconds());
   return `<div class="pool-sub">📈 Growing now… in 3 months ≈ <b>${dollars(future)}</b></div>`;
 }
 
@@ -724,7 +731,7 @@ function tick() {
     const live = card._live;
     if (!live) return;
     if (live.savingsPrincipal > 0) {
-      const grown = live.savingsPrincipal * live.weeklyRate * ((now - SERVER_NOW) / WEEK);
+      const grown = live.savingsPrincipal * live.weeklyRate * ((now - SERVER_NOW) / savingsPeriodSeconds());
       const intEl = $(".r-interest", card);   // savings-interest reward creeps up
       if (intEl) intEl.textContent = `+${dollars(live.interestBase + grown)}`;
     }
@@ -918,7 +925,7 @@ function openSaveModal(k) {
   const cfg = STATE.config;
   card.innerHTML = `
     <h2>🏦 ${esc(k.name)}'s Savings</h2>
-    <p>Savings grow <b>${cfg.savings_weekly_pct}% every week</b>! 📈<br>
+    <p>Savings grow <b>${cfg.savings_weekly_pct}% every ${savingsPeriodLabel()}</b>! 📈<br>
        You have <b>${dollars(k.wallet_cents)}</b> coins to save.</p>
     <div class="amount-grid">${amountGrid(k.wallet_cents, cfg.min_move_cents)}</div>
     <div class="spend-amt-row"><span class="spend-dollar">$</span>
@@ -964,7 +971,7 @@ function openBondModal(k) {
   card.innerHTML = `
     <h2>🚀 Invest in the Bank of Dad</h2>
     <p>Lock your coins away for a while and they grow into a <b>LOT</b> more!
-       Locking longer pays off most. Pick how long:</p>
+       Choose a duration and gain below:</p>
     <div class="bond-pick">${picks}</div>
     <p>How many coins to lock? (You have <b>${dollars(k.wallet_cents)}</b>)</p>
     <div class="amount-grid">${amountGrid(k.wallet_cents, cfg.min_move_cents)}</div>
@@ -1279,11 +1286,93 @@ function closeDad() {
   DAD_PIN = null;
 }
 
+let dadKidSignature = '';
+const kidSignature = () => JSON.stringify(STATE.kids.map(k => [k.id, k.name, k.emoji]));
+
+function openKidDialog(k, remove = false) {
+  const dialog = $('#kidDialog'), input = $('#kidName');
+  const submit = $('#kidDialogSave'), cancel = $('#kidDialogCancel');
+  const error = $('#kidDialogError');
+  let busy = false;
+  $('#kidDialogTitle').textContent = `${remove ? 'Remove' : 'Rename'} ${k.name}?`;
+  $('#kidDialogHelp').textContent = remove
+    ? `Permanently remove ${k.name} from this bank? This deletes their wallet and savings balances, uncollected rewards, all investments, transactions and chart history. This cannot be undone. Other kids are not affected. No money is transferred or paid out.`
+    : 'Only the name changes. All balances, investments and history stay the same.';
+  input.hidden = $('#kidNameLabel').hidden = remove;
+  input.disabled = remove;
+  input.value = k.name;
+  error.textContent = '';
+  submit.textContent = remove ? `Permanently remove ${k.name}` : 'Save name';
+  submit.classList.toggle('danger', remove);
+  submit.disabled = cancel.disabled = false;
+  dialog.oncancel = event => { if (busy) event.preventDefault(); };
+  dialog.onkeydown = event => {
+    if (event.key !== 'Tab') return;
+    const controls = $$('button:not(:disabled), input:not(:disabled)', dialog).filter(el => !el.hidden);
+    const first = controls[0], last = controls.at(-1);
+    if (!controls.length) { event.preventDefault(); return; }
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  };
+  dialog.onclose = () => {
+    const trigger = $(`.dk[data-id="${k.id}"] .${remove ? 'remove-kid' : 'rename-kid'}`);
+    if (!$('#dadPanel').classList.contains('hidden')) (trigger || $('#newKidName')).focus();
+  };
+  cancel.onclick = () => dialog.close();
+  $('#kidDialogForm').onsubmit = async event => {
+    event.preventDefault();
+    if (busy) return;
+    const name = input.value.trim();
+    if (!remove && (!name || Array.from(name).length > 80)) {
+      error.textContent = 'Use a name between 1 and 80 characters.';
+      input.focus();
+      return;
+    }
+    busy = true;
+    submit.disabled = cancel.disabled = true;
+    error.textContent = '';
+    let result;
+    try {
+      result = await api(`/api/admin/kid/${remove ? 'remove' : 'update'}`, remove
+        ? { kid_id: k.id, confirm_name: k.name } : { kid_id: k.id, name });
+    } catch (e) {
+      error.textContent = 'Could not confirm the result. Close and refresh the bank before trying again.';
+      // A lost response may already have committed. Never retry automatically.
+      busy = false;
+      cancel.disabled = false;
+      return;
+    }
+    if (!result.ok) {
+      error.textContent = result.message || result.error || 'Could not save the change.';
+      busy = false;
+      submit.disabled = cancel.disabled = false;
+      return;
+    }
+    dialog.close();
+    try {
+      await refresh();
+      renderDadPanel();
+      const target = remove ? $('#newKidName') : $(`.dk[data-id="${k.id}"] .rename-kid`);
+      target?.focus();
+    } catch (e) {
+      alert('Change saved. Reload the bank to see the latest state.');
+    }
+  };
+  dialog.showModal();
+  if (!remove) { input.focus(); input.select(); }
+  else cancel.focus(); // The harmless action is always the default focus.
+}
+
 function renderDadPanel() {
+  dadKidSignature = kidSignature();
   const box = $("#dadKids");
   box.innerHTML = STATE.kids.map((k) => `
     <div class="dk" data-id="${k.id}">
       <div class="dk-head">${esc(k.emoji)} ${esc(k.name)} — ${dollars(k.owned_cents)}</div>
+      <div class="row kid-management">
+        <button class="rename-kid" aria-label="Rename ${esc(k.name)}" data-id="${k.id}">Rename</button>
+        <button class="remove-kid" aria-label="Remove ${esc(k.name)}" data-id="${k.id}">Remove…</button>
+      </div>
       <div class="row gift-row">
         <input type="number" placeholder="$ amount" class="gift-amt" step="0.5" min="0">
         <input type="text" placeholder="What for? (e.g. chores 🧹)" class="gift-note" maxlength="40">
@@ -1299,6 +1388,12 @@ function renderDadPanel() {
         <button class="edithist-btn" data-id="${k.id}">📜 Edit transactions</button>
       </div>
     </div>`).join("");
+  $$('.kid-management button', box).forEach(btn => {
+    btn.onclick = () => {
+      const kid = STATE.kids.find(k => k.id === +btn.dataset.id);
+      if (kid) openKidDialog(kid, btn.classList.contains('remove-kid'));
+    };
+  });
   $$(".edithist-btn", box).forEach((btn) => {
     btn.onclick = () => openEditHistory(STATE.kids.find((x) => x.id === +btn.dataset.id));
   });
@@ -1345,22 +1440,42 @@ function renderDadRates() {
   const box = $("#dadRates");
   if (!box) return;
   box.innerHTML = `
-    <div class="row dk-allow"><span>🏦 Savings</span>
-      <input class="rate-sav" type="number" step="0.5" min="0" value="${cfg.savings_weekly_pct}"><span>% / week</span></div>
-    ${cfg.bonds.map((b) => `
-      <div class="row dk-allow"><span>${b.emoji} ${b.label} invest</span>
-        <input class="rate-bond" data-key="${b.key}" type="number" step="5" min="0" value="${b.return_pct}"><span>%</span></div>`).join("")}
-    <div class="row"><button id="saveRates" class="go">Save rates</button></div>`;
-  $("#saveRates").onclick = async () => {
-    const returns = {};
-    $$(".rate-bond").forEach((i) => { returns[i.dataset.key] = parseFloat(i.value || "0"); });
-    await api("/api/admin/rates", {
-      savings_weekly_pct: parseFloat($(".rate-sav").value || "0"),
-      returns,
-    });
-    $("#saveRates").textContent = "Saved ✓";
-    await refresh();
-    renderDadRates();
+    <form id="ratesForm">
+      <fieldset class="rate-rule"><legend>🏦 Savings</legend>
+        <label><input aria-label="Savings percent" class="rate-sav" type="number" step="any" min="0" required value="${cfg.savings_weekly_pct}"> %</label>
+        <label>every <input aria-label="Savings period in days" class="period-sav" type="number" step="1" min="1" max="3650" required value="${cfg.savings_period_days || 7}"> days</label>
+      </fieldset>
+      ${cfg.bonds.map((b, i) => `
+        <fieldset class="rate-rule"><legend>${b.emoji} Investment ${i + 1}</legend>
+          <label><input aria-label="Investment ${i + 1} percent" class="rate-bond" data-key="${b.key}" type="number" step="any" min="0" required value="${b.return_pct}"> % gain</label>
+          <label>after <input aria-label="Investment ${i + 1} duration in days" class="period-bond" data-key="${b.key}" type="number" step="1" min="1" max="3650" required value="${b.days}"> days</label>
+        </fieldset>`).join("")}
+      <p class="rate-note">Savings grow continuously. Changes apply from now; earned interest is kept. Existing investments keep their agreed dates and payouts.</p>
+      <button id="saveRates" type="submit" class="go">Save rates & periods</button>
+      <p class="rate-status" role="status" aria-live="polite"></p>
+    </form>`;
+  $("#ratesForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const returns = {}, bond_period_days = {};
+    $$(".rate-bond", box).forEach((i) => { returns[i.dataset.key] = i.valueAsNumber; });
+    $$(".period-bond", box).forEach((i) => { bond_period_days[i.dataset.key] = i.valueAsNumber; });
+    const btn = $("#saveRates"), status = $(".rate-status", box);
+    btn.disabled = true;
+    status.textContent = "Saving…";
+    try {
+      const result = await api("/api/admin/rates", {
+        savings_weekly_pct: $(".rate-sav", box).valueAsNumber,
+        savings_period_days: $(".period-sav", box).valueAsNumber,
+        returns, bond_period_days,
+      });
+      if (!result.ok) { status.textContent = result.message || "Could not save. Try again."; return; }
+      await refresh();
+      status.textContent = "Saved ✓";
+    } catch (error) {
+      status.textContent = "Could not confirm save. Reopen Rates to check before trying again.";
+    } finally {
+      btn.disabled = false;
+    }
   };
 }
 

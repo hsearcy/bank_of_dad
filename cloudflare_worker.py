@@ -96,6 +96,7 @@ class FamilyBank(FamilyOwner, FamilyBilling, DurableObject):
             create_sample(conn)
         elif not any(row['name'] == '_bod_family' for row in objects):
             raise RuntimeError('Unversioned Cloudflare bank; explicit migration required')
+        db._migrate(conn)
         rows = conn.execute('SELECT * FROM _bod_family').fetchall()
         if len(rows) != 1 or rows[0]['version'] != 1:
             raise RuntimeError('Unsupported Cloudflare bank schema')

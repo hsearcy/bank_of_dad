@@ -7,11 +7,13 @@ A local, kid-friendly savings dashboard for tracking imaginary family balances, 
 The [Cloudflare target](cloudflare/README.md) contains the hosted service source:
 guest dashboard, isolated Durable Object SQLite, native WebSocket updates, Google
 sign-in/guest claiming, Stripe billing and private owner controls. This public
-release is a sanitized snapshot of deployed application commit
-`574d423bd1a50fbc523055e08ea238379f502517`; operator configuration is portable,
-not a copy of production credentials or infrastructure settings. No live keys,
-owner identities or family data are included. See the [publication notes](cloudflare/PUBLIC-RELEASE.md)
-for parity, setup and verification boundaries. Free self-hosting below is unchanged.
+snapshot also includes [family polish](docs/family-polish-integration.md):
+About/Privacy, compact screen controls, child rename/removal, and configurable
+savings/investment periods. Operator configuration remains portable, not a copy
+of production credentials or infrastructure settings. No live keys, owner
+identities or family data are included. See the [publication notes](cloudflare/PUBLIC-RELEASE.md)
+for the original hosted snapshot's setup and verification boundaries. Source
+publication does not deploy these changes. Free self-hosting remains independent.
 
 ## Screenshots
 
@@ -35,7 +37,7 @@ Requires Python 3 and `venv`. From this directory:
 
 The script creates a local virtual environment, installs the requirements (including Flask-Sock for WebSockets), and starts the app. Open **http://127.0.0.1:5001** on the same machine. On first visit, set a 4–8 digit Dad PIN, open **Dad**, and add a kid by name and emoji. A fresh database starts empty; no example family or transaction history is included. Newly added kids receive the starting wallet amount configured in `config.py`.
 
-Use Dad controls to adjust allowances and rates, give money, edit transactions, or advance the clock for demonstrations. Kids can collect rewards, save, withdraw, invest, and record spending. Changes persist in SQLite. This is an educational simulation; rates and balances are not financial advice or actual accounts.
+Use Dad controls to adjust allowances and rates, give money, edit transactions, or advance the clock for demonstrations. Each child also has **Rename** and **Remove…** controls (including the hosted Sample Kid). Rename preserves their money and history. Remove asks for confirmation before permanently deleting that child’s balances, rewards, investments and history; it does not affect other children or move money. See [kid management safety and verification](docs/kid-management.md). Kids can collect rewards, save, withdraw, invest, and record spending. Changes persist in SQLite. This is an educational simulation; rates and balances are not financial advice or actual accounts.
 
 ## Configuration and data
 

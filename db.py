@@ -7,6 +7,7 @@ so future reward sources can just append transactions.
 """
 
 import os
+from pathlib import Path
 import sqlite3
 
 import config
@@ -33,6 +34,7 @@ CREATE TABLE IF NOT EXISTS kids (
     allowance_anchor_ts     REAL NOT NULL,
     allowance_periods_paid  INTEGER NOT NULL DEFAULT 0,
     savings_accrued_ts      REAL NOT NULL,
+    savings_interest_carry  REAL NOT NULL DEFAULT 0,
     created_ts              REAL NOT NULL
 );
 
@@ -77,6 +79,7 @@ CREATE TABLE IF NOT EXISTS settings (
 
 
 def get_conn(path=None):
+    request_transaction = False
     hosted_request = False
     if path is None:
         from flask import g, has_request_context, request
@@ -88,17 +91,35 @@ def get_conn(path=None):
                 raise RuntimeError('Cloudflare bank access requires a family transaction')
             return conn
         path = getattr(g, 'bank_db_path', None) if has_request_context() else None
-        if os.environ.get('BANK_OF_DAD_MODE') == 'hosted' and path is None:
-            raise RuntimeError('Hosted bank access requires an authenticated family')
         hosted_request = os.environ.get('BANK_OF_DAD_MODE') == 'hosted'
-    conn = sqlite3.connect(path or DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
+        if hosted_request and path is None:
+            raise RuntimeError('Hosted bank access requires an authenticated family')
+        request_transaction = has_request_context()
+    # Hosted files are created only by the explicit onboarding/login paths. A
+    # retained session must never turn a missing family file into an empty bank.
     if hosted_request:
-        # Existing domain operations read then write; serialize before their first
-        # read to prevent concurrent parent sessions from losing balance updates.
-        conn.execute('BEGIN IMMEDIATE')
-    return conn
+        assert path is not None  # fail-closed check above, never the default DB
+        conn = sqlite3.connect(Path(path).resolve().as_uri() + '?mode=rw', uri=True)
+    else:
+        conn = sqlite3.connect(path or DB_PATH)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        if request_transaction:
+            # Both SQLite HTTP targets must serialize before the first read. In
+            # particular a collector cannot combine a pre-change accrual anchor with
+            # a post-change savings rate. DO requests already own transactionSync.
+            conn.execute('BEGIN IMMEDIATE')
+            if hosted_request and _migrate(conn):
+                # Only additive upgrades, never init/seed or startup-wide writes.
+                # Commit the upgrade even for a read whose request transaction is
+                # later closed without committing. Reacquire before domain reads.
+                conn.commit()
+                conn.execute('BEGIN IMMEDIATE')
+        return conn
+    except Exception:
+        conn.close()  # Roll back partial DDL too; do not retain a failed writer.
+        raise
 
 
 def get_setting(conn, key, default=None):
@@ -127,7 +148,7 @@ def init_db(seed=True, path=None):
 
 
 def _migrate(conn):
-    """Additive migrations for DBs created before a column existed."""
+    """Add missing columns; return whether this transaction upgraded the schema."""
     hist_cols = {r["name"] for r in conn.execute("PRAGMA table_info(history)")}
     for col in ("wallet_cents", "savings_cents", "invest_cents"):
         if col not in hist_cols:
@@ -138,6 +159,8 @@ def _migrate(conn):
         conn.execute("ALTER TABLE transactions ADD COLUMN bond_id INTEGER")
 
     kid_cols = {r["name"] for r in conn.execute("PRAGMA table_info(kids)")}
+    if "savings_interest_carry" not in kid_cols:
+        conn.execute("ALTER TABLE kids ADD COLUMN savings_interest_carry REAL NOT NULL DEFAULT 0")
     if "allowance_enabled" not in kid_cols:
         conn.execute("ALTER TABLE kids ADD COLUMN allowance_enabled INTEGER NOT NULL DEFAULT 1")
     if "allowance_cents" not in kid_cols:
@@ -148,3 +171,7 @@ def _migrate(conn):
         conn.execute("ALTER TABLE kids ADD COLUMN allowance_period_days INTEGER")
         conn.execute("UPDATE kids SET allowance_period_days=? WHERE allowance_period_days IS NULL",
                      (config.ALLOWANCE_PERIOD_DAYS,))
+    return (not {"wallet_cents", "savings_cents", "invest_cents"} <= hist_cols
+            or "bond_id" not in tx_cols
+            or not {"savings_interest_carry", "allowance_enabled", "allowance_cents",
+                    "allowance_period_days"} <= kid_cols)
