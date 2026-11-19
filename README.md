@@ -2,6 +2,17 @@
 
 A local, kid-friendly savings dashboard for tracking imaginary family balances, allowances, savings interest, and fixed-term investments. It does not connect to a bank or move real money.
 
+## Cloudflare hosted target
+
+The [Cloudflare target](cloudflare/README.md) contains the hosted service source:
+guest dashboard, isolated Durable Object SQLite, native WebSocket updates, Google
+sign-in/guest claiming, Stripe billing and private owner controls. This public
+release is a sanitized snapshot of deployed application commit
+`574d423bd1a50fbc523055e08ea238379f502517`; operator configuration is portable,
+not a copy of production credentials or infrastructure settings. No live keys,
+owner identities or family data are included. See the [publication notes](cloudflare/PUBLIC-RELEASE.md)
+for parity, setup and verification boundaries. Free self-hosting below is unchanged.
+
 ## Screenshots
 
 These screenshots show fictional names and sample balances in a disposable database. A fresh self-hosted install starts empty; hosted device trials start with Sample Kid.
@@ -89,7 +100,8 @@ HOSTED.md). Self-hosting stays free and needs no Stripe or
 identity-provider dependencies or credentials. Saving a hosted bank with the default sign-in provider needs a Google account; trying it does not.
 No Auth0 service is required. See [HOSTED.md](HOSTED.md) for setup,
 retained data, verification and explicit limits. Hosted mode is not enabled by
-`run.sh` and has not been deployed or verified against real provider accounts.
+`run.sh`. These Flask instructions are separate from the deployed Cloudflare target;
+local fixture tests do not establish real-provider acceptance for your installation.
 
 ## Self-hosted security limitations
 
