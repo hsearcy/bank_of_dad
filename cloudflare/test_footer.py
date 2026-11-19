@@ -60,8 +60,9 @@ def test_footer_and_compact_controls_in_workerd(runtime, width):
                     expect(dialog).to_contain_text('my kids')
                     expect(dialog).to_contain_text('compounding')
                 else:
-                    for text in ['nicknames', 'verified account ID', 'Google', 'Stripe', 'Cloudflare', 'Clearing browser data']:
+                    for text in ['names you enter', 'verified account ID', 'Google', 'Stripe', 'Cloudflare', 'Clearing browser data']:
                         expect(dialog).to_contain_text(text)
+                    expect(dialog).not_to_contain_text('Use nicknames')
                     expect(dialog.get_by_role('link', name='support@thebankofdad.app')).to_have_attribute('href', 'mailto:support@thebankofdad.app')
                 page.keyboard.press('Escape')
                 expect(dialog).not_to_be_visible()
